@@ -224,13 +224,23 @@ export interface NativeNotificationInput {
  *  OS bridge — callers registering per-notification state (plugin handlers)
  *  must only do so on true, or suppressed/throttled notifications leak it. */
 export function dispatchNativeNotification(input: NativeNotificationInput): boolean {
+  return dispatchNotification(input, false)
+}
+
+/** Call after consuming the sending page's pending turn ID for a successful completion. */
+export function dispatchSubmittedBrowserTurnNotification(input: Omit<NativeNotificationInput, 'kind'>): boolean {
+  return dispatchNotification({ ...input, kind: 'turnDone' }, true)
+}
+
+function dispatchNotification(input: NativeNotificationInput, submittedBrowserTurn: boolean): boolean {
   const prefs = $nativeNotifyPrefs.get()
 
   if (!prefs.enabled || !prefs.kinds[input.kind]) {
     return false
   }
 
-  if (withinNativeNotifyBaseline()) {
+  // A completion matched to this page's pending submission is new work even during reconnect.
+  if (!submittedBrowserTurn && withinNativeNotifyBaseline()) {
     return false
   }
 

@@ -267,11 +267,11 @@ describe('Webapp response-ready notification', () => {
     expect(notify).toHaveBeenCalledOnce()
   })
 
-  it('suppresses replayed and interrupted completions', () => {
-    trackBrowserNotificationTurn('prior-turn')
+  it('suppresses unowned history and consumes interrupted submissions', () => {
     trackBrowserNotificationTurn('interrupted-turn')
     complete('prior-turn', { replayed: true })
     complete('interrupted-turn', { status: 'interrupted' })
+    complete('interrupted-turn', { replayed: true })
 
     expect(notify).not.toHaveBeenCalled()
   })

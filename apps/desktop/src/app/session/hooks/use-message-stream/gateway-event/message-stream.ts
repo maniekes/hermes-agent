@@ -15,7 +15,7 @@ import { billingCtaLabel, clearBillingBlock, runBillingRecovery, setBillingBlock
 import { clearSettledClarifyRequest } from '@/store/clarify'
 import { setSessionCompacting } from '@/store/compaction'
 import { noteFreeTierTurnComplete } from '@/store/free-tier-sign-in'
-import { dispatchNativeNotification } from '@/store/native-notifications'
+import { dispatchNativeNotification, dispatchSubmittedBrowserTurnNotification } from '@/store/native-notifications'
 import { notify } from '@/store/notifications'
 import { flashPetActivity, markPetUnread, setPetActivity } from '@/store/pet'
 import { clearAllPrompts } from '@/store/prompts'
@@ -445,13 +445,20 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
     const browser = hostHas('browserNotifications')
     const ownTurn = browser && takeBrowserNotificationTurn(payload?.persisted_turn?.submission_id, event.admission_id)
 
-    if (!browser || (ownTurn && !event.replayed && payload?.status === 'complete')) {
-      dispatchNativeNotification({
+    // Reconnect marks buffered live frames as replayed too. The pending submission
+    // in this page establishes ownership and is consumed by the first terminal frame.
+    if (!browser || (ownTurn && payload?.status === 'complete')) {
+      const notification = {
         body: turnDoneNotificationBody(finalText, translateNow('notifications.native.turnDoneBody')),
-        kind: 'turnDone',
         sessionId,
         title: translateNow('notifications.native.turnDoneTitle')
-      })
+      }
+
+      if (browser) {
+        dispatchSubmittedBrowserTurnNotification(notification)
+      } else {
+        dispatchNativeNotification({ ...notification, kind: 'turnDone' })
+      }
     }
 
     if (payload?.status === 'complete') {
