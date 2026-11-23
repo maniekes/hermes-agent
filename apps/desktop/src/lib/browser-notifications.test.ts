@@ -116,6 +116,23 @@ describe('showBrowserNotification', () => {
     expect(opened.mock.calls).toEqual([['stored-1']])
   })
 
+  it('uses a distinct OS tag for each response in the same conversation', async () => {
+    const { postMessage } = workerFixture()
+    const payload = { focusSessionId: 'stored-chat', kind: 'turnDone', sessionId: 'running-chat' }
+
+    expect(await showBrowserNotification({ ...payload, tag: 'first-turn' })).toBe(true)
+    expect(await showBrowserNotification({ ...payload, tag: 'second-turn' })).toBe(true)
+
+    expect(postMessage).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      options: expect.objectContaining({ tag: 'hermes:turnDone:turn:first-turn' }),
+      sessionId: 'stored-chat'
+    }), expect.any(Array))
+    expect(postMessage).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      options: expect.objectContaining({ tag: 'hermes:turnDone:turn:second-turn' }),
+      sessionId: 'stored-chat'
+    }), expect.any(Array))
+  })
+
   it('propagates worker registration and display errors', async () => {
     const { register, postMessage } = workerFixture({ ok: false, error: 'NotAllowedError' })
     register.mockRejectedValueOnce(new Error('registration failed'))

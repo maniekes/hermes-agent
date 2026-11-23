@@ -195,11 +195,12 @@ export async function showBrowserNotification(
   }
 
   const focusSessionId = payload.focusSessionId || payload.sessionId
+  const turnTag = payload.kind === 'turnDone' && payload.tag ? `turn:${payload.tag}` : undefined
 
   const options: NotificationOptions = {
     body: payload.body,
     silent: payload.silent,
-    tag: `hermes:${payload.kind ?? ''}:${focusSessionId ?? payload.tag ?? ''}`
+    tag: `hermes:${payload.kind ?? ''}:${turnTag ?? focusSessionId ?? payload.tag ?? ''}`
   }
 
   let notification: Notification

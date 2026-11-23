@@ -443,19 +443,22 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
     )
 
     const browser = hostHas('browserNotifications')
-    const ownTurn = browser && takeBrowserNotificationTurn(payload?.persisted_turn?.submission_id, event.admission_id)
+
+    const ownTurnId = browser
+      ? takeBrowserNotificationTurn(payload?.persisted_turn?.submission_id, event.admission_id)
+      : null
 
     // Reconnect marks buffered live frames as replayed too. The pending submission
     // in this page establishes ownership and is consumed by the first terminal frame.
-    if (!browser || (ownTurn && payload?.status === 'complete')) {
+    if (!browser || (ownTurnId && payload?.status === 'complete')) {
       const notification = {
         body: turnDoneNotificationBody(finalText, translateNow('notifications.native.turnDoneBody')),
         sessionId,
         title: translateNow('notifications.native.turnDoneTitle')
       }
 
-      if (browser) {
-        dispatchSubmittedBrowserTurnNotification(notification)
+      if (ownTurnId) {
+        dispatchSubmittedBrowserTurnNotification({ ...notification, tag: ownTurnId })
       } else {
         dispatchNativeNotification({ ...notification, kind: 'turnDone' })
       }

@@ -237,7 +237,7 @@ export function dispatchNativeNotification(input: NativeNotificationInput): bool
 }
 
 /** Call after consuming the sending page's pending turn ID for a successful completion. */
-export function dispatchSubmittedBrowserTurnNotification(input: Omit<NativeNotificationInput, 'kind'>): boolean {
+export function dispatchSubmittedBrowserTurnNotification(input: Omit<NativeNotificationInput, 'kind'> & { tag: string }): boolean {
   return dispatchNotification({ ...input, kind: 'turnDone' }, true)
 }
 
@@ -257,7 +257,9 @@ function dispatchNotification(input: NativeNotificationInput, submittedBrowserTu
     return false
   }
 
-  if (throttled(`${input.kind}:${input.sessionId ?? input.tag ?? (input.global ? 'global' : '')}`, Date.now())) {
+  // Owning pages already consume each turn once. A session-level throttle
+  // would discard a different submission that just happened to finish soon after it.
+  if (!submittedBrowserTurn && throttled(`${input.kind}:${input.sessionId ?? input.tag ?? (input.global ? 'global' : '')}`, Date.now())) {
     return false
   }
 

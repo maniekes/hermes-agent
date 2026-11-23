@@ -175,6 +175,8 @@ interface Scenario {
   interrupted?: boolean
   rewind?: 'regenerate' | 'edit'
   tile?: boolean
+  twoTurns?: boolean
+  failed?: boolean
   expected: number
 }
 
@@ -211,7 +213,9 @@ const scenarios: Scenario[] = [
   { name: 'regenerate', chat: 'cold', rewind: 'regenerate', expected: 1 },
   { name: 'edit and resubmit', chat: 'cold', rewind: 'edit', expected: 1 },
   { name: 'focused chat tile with a different main session', chat: 'cold', tile: true, expected: 1 },
-  { name: 'foreground chat tile', chat: 'cold', tile: true, foreground: true, expected: 0 }
+  { name: 'foreground chat tile', chat: 'cold', tile: true, foreground: true, expected: 0 },
+  { name: 'two distinct local turns within one second', chat: 'cold', twoTurns: true, expected: 1 },
+  { name: 'failed local turn', chat: 'cold', failed: true, expected: 0 }
 ]
 
 it.each(scenarios)('dispatches $expected response-ready alerts for $name', async scenario => {
@@ -220,6 +224,7 @@ it.each(scenarios)('dispatches $expected response-ready alerts for $name', async
   const sessionId = isNew ? 'example-new-chat' : 'example-existing-chat'
   const mainSessionId = scenario.tile ? 'example-main-chat' : sessionId
   const admissionId = 'example-admission'
+  const nextAdmissionId = 'example-second-admission'
 
   const messages: SessionMessage[] = isNew
     ? []
@@ -252,11 +257,12 @@ it.each(scenarios)('dispatches $expected response-ready alerts for $name', async
     }
 
     if (method === 'prompt.submit') {
+      const receiptAdmissionId = submission.params ? nextAdmissionId : admissionId
       submission.params = params
 
       return {
         ref: { session_id: sessionId },
-        admission_id: admissionId,
+        admission_id: receiptAdmissionId,
         submission_id: params.submission_id,
         status: 'queued'
       }
@@ -456,8 +462,11 @@ it.each(scenarios)('dispatches $expected response-ready alerts for $name', async
         } else {
           await hook.result.current.prompts.editMessage({
             content: [{ type: 'text', text: 'Edited question' }],
+            createdAt: new Date(),
+            metadata: { custom: {} },
             parentId: null,
             role: 'user',
+            runConfig: undefined,
             sourceId: user!.id
           })
         }
@@ -485,9 +494,10 @@ it.each(scenarios)('dispatches $expected response-ready alerts for $name', async
 
     const stamp = { session_id: sessionId, authority_epoch: 1, execution_generation: 2, admission_id: admissionId }
 
+    const status = scenario.failed ? 'error' : scenario.interrupted ? 'interrupted' : 'complete'
+
     const payload = {
-      status: scenario.interrupted ? ('interrupted' as const) : ('complete' as const),
-      outcome: scenario.interrupted ? 'cancelled' : 'completed',
+      status,
       text: 'Example answer',
       persisted_turn: {
         // Exercise the bound-admission fallback for an edit completion without a submission ID.
@@ -497,7 +507,7 @@ it.each(scenarios)('dispatches $expected response-ready alerts for $name', async
         complete: true,
         row_ids: []
       }
-    }
+    } satisfies NonNullable<GatewayEvent<'message.complete'>['payload']>
 
     const completion: GatewayEvent<'message.complete'> = { ...stamp, type: 'message.complete', seq: 4, payload }
 
@@ -541,6 +551,52 @@ it.each(scenarios)('dispatches $expected response-ready alerts for $name', async
       scenario.replay === 'pending' && !isNew
     )
     expect(notify).toHaveBeenCalledTimes(scenario.expected)
+
+    if (scenario.twoTurns) {
+      const firstSubmissionId = submission.params?.submission_id
+      clock += 100
+      await act(async () => {
+        expect(await hook.result.current.prompts.submitText('Another question')).toBe(true)
+      })
+      const secondSubmissionId = submission.params?.submission_id
+      expect(typeof secondSubmissionId).toBe('string')
+      expect(secondSubmissionId).not.toBe(firstSubmissionId)
+      const nextStamp = { ...stamp, execution_generation: 3, admission_id: nextAdmissionId }
+
+      const secondCompletion: typeof completion = {
+        ...completion,
+        ...nextStamp,
+        seq: 6,
+        payload: {
+          ...payload,
+          persisted_turn: { ...payload.persisted_turn, submission_id: String(secondSubmissionId) }
+        }
+      }
+
+      act(() => {
+        socket.event({ ...nextStamp, type: 'message.start', seq: 5, payload: {} })
+        socket.event(secondCompletion)
+      })
+      expect(observed.some(event => event.seq === 6)).toBe(true)
+      expect(notify).toHaveBeenCalledTimes(2)
+      expect(notify).toHaveBeenNthCalledWith(1, expect.objectContaining({ sessionId, tag: firstSubmissionId }))
+      expect(notify).toHaveBeenNthCalledWith(2, expect.objectContaining({ sessionId, tag: secondSubmissionId }))
+
+      clock += 5_000
+      act(() => socket.event({ ...secondCompletion, seq: 7, replayed: true }))
+      expect(observed.some(event => event.seq === 7)).toBe(true)
+      expect(notify).toHaveBeenCalledTimes(2)
+
+      return
+    }
+
+    if (scenario.failed) {
+      // A failed completion retires ownership, even if an anomalous later frame
+      // for that same turn claims success.
+      act(() => socket.event({ ...completion, seq: 5, replayed: true, payload: { ...payload, status: 'complete' } }))
+      expect(observed.some(event => event.seq === 5)).toBe(true)
+      expect(notify).not.toHaveBeenCalled()
+    }
 
     if (scenario.expected) {
       expect(notify).toHaveBeenCalledWith(

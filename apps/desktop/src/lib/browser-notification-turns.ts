@@ -25,18 +25,20 @@ export function bindBrowserNotificationAdmission(submissionId: string, admission
   }
 }
 
-export function takeBrowserNotificationTurn(submissionId?: null | string, admissionId?: string): boolean {
+export function takeBrowserNotificationTurn(submissionId?: null | string, admissionId?: string): string | null {
   if (submissionId) {
-    return submitted.delete(submissionId)
+    return submitted.delete(submissionId) ? submissionId : null
   }
 
   if (admissionId) {
     for (const [id, bound] of submitted) {
       if (bound === admissionId) {
-        return submitted.delete(id)
+        submitted.delete(id)
+
+        return id
       }
     }
   }
 
-  return false
+  return null
 }
