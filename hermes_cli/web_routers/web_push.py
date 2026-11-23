@@ -11,7 +11,7 @@ from starlette.responses import JSONResponse
 from gateway.session_authorities import local_bots, served_profile_name
 from gateway.session_identity import authenticated_principal_digest
 from gateway.web_push import store
-from gateway.web_push.delivery import installation_digest
+from gateway.web_push.delivery import PreviewSendUnconfirmed, installation_digest
 from hermes_cli import browser_credential
 from hermes_cli.dashboard_auth.cookies import read_web_push_revoke_cookie, set_web_push_revoke_cookie
 from hermes_cli.dashboard_auth.request_utils import cookie_origin_is_allowed
@@ -157,7 +157,10 @@ async def push_action(request: Request, action: str, profile: str | None = None)
     if action == "privacy":
         if not isinstance(value, dict) or value.keys() != {"preview"} or type(value["preview"]) is not bool:
             raise HTTPException(400, "Expected a Web Push privacy choice")
-        preview = await run_in_threadpool(push.set_preview, authority, device, owner, login, value["preview"])
+        try:
+            preview = await run_in_threadpool(push.set_preview, authority, device, owner, login, value["preview"])
+        except PreviewSendUnconfirmed:
+            raise HTTPException(503, "Generic preference recorded; an in-flight preview is still unconfirmed") from None
         if preview is None:
             raise HTTPException(409, "Web Push subscription is inactive")
         return _response(preview=preview)

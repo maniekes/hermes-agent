@@ -178,7 +178,9 @@ The alert opens the conversation after sign-in if necessary. By default it shows
 and leaves out the conversation title. **Show message previews** opts this Chrome installation and
 profile into showing a short title and part of the final reply on the lock screen. The choice belongs
 to the current enrollment and starts off again if it needs to be replaced. Turning previews off also
-applies to queued deliveries and retries. An alert already dispatched may still show its preview.
+applies to queued deliveries and retries. The gateway waits briefly for a reserved preview attempt
+before confirming the change. A timeout leaves that attempt uncertain, and an alert already dispatched
+may still show a preview. Ambiguous hidden markup, media paths and overlong source text use a generic alert.
 Delivery is best effort and an alert already
 accepted by the push provider may still appear after disabling. Turning off **Response ready**
 revokes this profile. Turning off **Enable notifications** revokes this installation across the
