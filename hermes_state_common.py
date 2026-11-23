@@ -11,6 +11,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from gateway.web_push.store import SCHEMA as _WEB_PUSH_SCHEMA
 from hermes_cli.timefmt import EPOCH_MAX, EPOCH_MIN
 from hermes_state_keys import CRON_PRINCIPAL_ID
 from hermes_state_pidns import persistent_record_pidns_checkable, pid_namespace_id
@@ -455,7 +456,7 @@ def emit_session_deleted(db, deleted_ids, *, reason, primary=None, sessions_dir=
 _FTS_TRIGGERS = ("messages_fts_insert", "messages_fts_delete", "messages_fts_update",
                  "messages_fts_trigram_insert", "messages_fts_trigram_delete", "messages_fts_trigram_update")
 
-SCHEMA_SQL = """
+SCHEMA_SQL = _WEB_PUSH_SCHEMA + """
 CREATE TABLE IF NOT EXISTS schema_version (
     version INTEGER NOT NULL
 );

@@ -180,7 +180,8 @@ def _ticket_principal(request: Request) -> tuple[dict, str | None]:
 
 
 def mint_socket_ticket(identity: dict, socket: str, *, session_token: str | None = None,
-                       sign_in: str | None = None, profile_home: str | None = None) -> str:
+                       sign_in: str | None = None, profile_home: str | None = None,
+                       push_device: str | None = None) -> str:
     """A one-use ticket that opens only *socket* (``web_session_sockets.GATEWAY_SOCKET``,
     ``HOST_TERMINAL_SOCKET`` or one of ``AUDIO_SOCKETS``) as *identity*. Minted with
     *session_token*, or by a login whose sign-in binding was checked against the browser credential
@@ -198,6 +199,8 @@ def mint_socket_ticket(identity: dict, socket: str, *, session_token: str | None
         extra["sign_in"] = sign_in
     if profile_home is not None:
         extra["profile_home"] = profile_home
+    if push_device is not None:
+        extra["push_device"] = push_device
     return mint_ticket(user_id=identity["user_id"], provider=identity["provider"],
                        issuer=identity.get("issuer", ""), extra=extra)
 
@@ -207,8 +210,15 @@ def _socket_ticket_response(request: Request, identity: dict, socket: str, sessi
     from hermes_cli.dashboard_auth.ws_tickets import TTL_SECONDS
     from hermes_cli.webapp_sign_in import sign_in_of
 
-    ticket = mint_socket_ticket(identity, socket, session_token=session_token, sign_in=sign_in_of(request),
-                                profile_home=profile_home)
+    sign_in = sign_in_of(request)
+    push_device = None
+    if socket == GATEWAY_SOCKET and sign_in:
+        from gateway.web_push.delivery import installation_digest
+        values = request.headers.getlist("x-hermes-push-installation")
+        if len(values) == 1:
+            push_device = installation_digest(values[0])
+    ticket = mint_socket_ticket(identity, socket, session_token=session_token, sign_in=sign_in,
+                                profile_home=profile_home, push_device=push_device)
     return JSONResponse({"ticket": ticket, "ttl_seconds": TTL_SECONDS}, headers={"Cache-Control": "no-store"})
 
 

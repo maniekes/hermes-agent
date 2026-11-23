@@ -13,6 +13,7 @@ from agent.conversation_compression_archive import ABSORBED_ROW_IDS
 from agent.message_metadata import (
     CANONICAL_ROW, DATA_USE, DB_ROW_SNAPSHOT, MESSAGE_UID, PERSISTENCE_ONLY_MESSAGE_FIELDS, TOOL_CALL_UID, TOOL_CALL_UIDS,
 )
+from gateway.web_push import store as web_push
 from hermes_state_keys import admission_fingerprint
 
 
@@ -179,7 +180,7 @@ ADMISSION_QUEUE_MAX = 32
 
 def admit_session_input(db, *, epoch: int, principal_id: str, session_id: str,
                         request_id: str, payload: dict, intent: str = 'queue',
-                        _authorize_write=None, _replay_guard=None) -> dict:
+                        _authorize_write=None, _replay_guard=None, _on_new_admission=None) -> dict:
     """Admit input; the trusted private guard raises to refuse a NEW write.
 
     The guard receives the owning transaction connection, must not commit it or
@@ -223,6 +224,8 @@ def admit_session_input(db, *, epoch: int, principal_id: str, session_id: str,
             target_session_id,lineage_json,payload_json,payload_digest,intent,status,owner_epoch)
             VALUES(?,?,?,?,?,?,?,?,'queued',?)''',
             (admission_id, request_id, principal_id, session_id, json.dumps([session_id]), encoded, digest, intent, epoch))
+        if _on_new_admission is not None:
+            _on_new_admission(conn, admission_id)
         return _row(_admission(conn, admission_id))
     return db._execute_write(write)
 
@@ -231,7 +234,7 @@ def get_session_admission(db, *, admission_id: str) -> dict | None:
     with db._read_ctx() as conn:
         from hermes_state_terminal import terminal_admission
         row = conn.execute('SELECT * FROM session_admissions WHERE admission_id=?', (admission_id,)).fetchone()
-        return _row(row if row is not None else terminal_admission(conn, admission_id))
+        return web_push.annotate(conn, _row(row if row is not None else terminal_admission(conn, admission_id)))
 
 
 def find_session_admission(db, *, principal_id: str, session_id: str, request_id: str) -> dict | None:
@@ -306,7 +309,7 @@ def claim_session_input(db, *, epoch: int, session_id: str, _guard=None, head=_A
         # session): a row above it on this conversation was written by this turn, so settlement can
         # tell this turn's own failed-turn boundary from an earlier turn's (#134889 GW-21).
         claimed['transcript_mark'] = conn.execute('SELECT COALESCE(MAX(id), 0) FROM messages').fetchone()[0]
-        return claimed
+        return web_push.annotate(conn, claimed)
     return db._execute_write(write)
 
 
@@ -338,7 +341,8 @@ def settle_session_input(db, *, epoch: int, admission_id: str, generation: int, 
         conn.execute("UPDATE session_admissions SET status='terminal',outcome=? WHERE admission_id=?", (outcome, admission_id))
         settle_steer_transfers(conn, epoch=epoch, generation=generation, transfers=_transfers, outcome=outcome)
         conn.execute('UPDATE sessions SET runtime_revision=runtime_revision+1 WHERE id=?', (row['target_session_id'],))
-        return _row(_admission(conn, admission_id))
+        web_push.settled(conn, row, outcome)
+        return web_push.annotate(conn, _row(_admission(conn, admission_id)))
     return db._execute_write(write)
 
 
@@ -758,7 +762,8 @@ def resolve_unknown_session_input(db, *, epoch: int, admission_id: str, generati
         conn.execute("UPDATE session_admissions SET status='terminal',outcome=? WHERE admission_id=?",
                      (outcome, admission_id))
         conn.execute('UPDATE sessions SET runtime_revision=runtime_revision+1 WHERE id=?', (row['target_session_id'],))
-        return _row(_admission(conn, admission_id))
+        web_push.settled(conn, row, outcome)
+        return web_push.annotate(conn, _row(_admission(conn, admission_id)))
     return db._execute_write(write)
 
 

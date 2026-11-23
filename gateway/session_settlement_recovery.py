@@ -61,6 +61,8 @@ def completion_payload(row, settled, response, captured):
             settled['outcome'], 'error')}
     # Only the agent's reuse site sets this (never inferred from equal text): the
     # final repeats a reply the viewer already painted, so it settles in place.
+    if row.get('web_push') or settled.get('web_push'):
+        complete['web_push'] = True
     captured_result = (captured or {}).get('result') or {}
     # A gateway-owned refusal brings its own descriptor (``session_cron.execute``); every other failed
     # turn gets the one the TUI path builds from the same result, so the viewer shows the right card.

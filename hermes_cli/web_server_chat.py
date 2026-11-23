@@ -409,6 +409,9 @@ def _consume_ws_ticket(ws: WebSocket, reject, socket: Optional[str] = None, *,
         ws._hermes_auth_identity["issuer"] = info["issuer"]
     if info.get("profile_home"):
         ws._hermes_ticket_profile_home = info["profile_home"]
+    if info.get("sign_in") and info.get("push_device") and getattr(ws.app.state, "ui_surface", None) == "webapp":
+        ws._hermes_auth_identity["web_push_login"] = info["sign_in"]
+        ws._hermes_auth_identity["web_push_device"] = info["push_device"]
     if (admitted := admitted_with(info)) is not None:
         track(ws, admitted)
     if not protocol_ticket:

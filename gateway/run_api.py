@@ -61,6 +61,8 @@ class GatewayDashboardMount:
         self._closed = False
         self._replaced_session_token = None
         self._undo_own_sign_in = None
+        self._push_stop = asyncio.Event()
+        self._push_task = None
 
     @property
     def loaded(self) -> bool:
@@ -125,6 +127,19 @@ class GatewayDashboardMount:
                         delattr(self.web.app.state, name)
                 self.web._SESSION_TOKEN, self._replaced_session_token = self._replaced_session_token, None
 
+    async def _start_web_push(self, web):
+        webapp = getattr(self._state, "webapp", None)
+        if not getattr(webapp, "web_push", False) or not web.app.state.auth_required:
+            return
+        from gateway.web_push.delivery import WebPush
+        from hermes_cli.browser_credential import generation
+
+        push = await asyncio.to_thread(WebPush.from_home, webapp.home)
+        if push is not None and not self._closed:
+            self.runner.web_push = push
+            self._push_task = asyncio.create_task(push.run(self.runner, self._push_stop, generation),
+                                                 name="webapp-push")
+
     async def ensure(self):
         """Import (off the loop), bind and start the dashboard app once; returns ``web_server``."""
         if self.web is not None:
@@ -150,6 +165,7 @@ class GatewayDashboardMount:
                 self._bind_state(web)
                 lifespan = web.app.router.lifespan_context(web.app)
                 await lifespan.__aenter__()
+                await self._start_web_push(web)
                 if self._closed:  # close() won while the lifespan started; it never saw this mount
                     await lifespan.__aexit__(None, None, None)
                     raise RuntimeError("gateway API stopped")
@@ -163,6 +179,10 @@ class GatewayDashboardMount:
 
     async def close(self) -> None:
         self._closed = True
+        self._push_stop.set()
+        if self._push_task is not None:
+            self.runner.web_push = None
+            await self._push_task
         lifespan, self._lifespan = self._lifespan, None
         try:
             if lifespan is not None:

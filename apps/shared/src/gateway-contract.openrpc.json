@@ -24550,6 +24550,18 @@
               }
             ],
             "default": null
+          },
+          "web_push": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Web Push"
           }
         },
         "title": "MessageCompletePayload",

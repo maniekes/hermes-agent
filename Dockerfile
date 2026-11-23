@@ -299,11 +299,13 @@ RUN touch ./README.md
 # Do not leave the cache at its default: HERMES_HOME is not set yet in this
 # stage, so the default is /root/.hermes/cache/uv, which nothing reads. A plugin
 # install then runs with an empty cache and builds python-olm from source.
-RUN python3 -m pm.build_env --source /opt/hermes --python /usr/local/bin/python3 \
+ARG HERMES_WEB_PUSH=0
+RUN if [ "$HERMES_WEB_PUSH" = 1 ]; then set -- --extra web-push; else set --; fi; \
+    python3 -m pm.build_env --source /opt/hermes --python /usr/local/bin/python3 \
     --cache /opt/hermes/uv-cache \
     --out /opt/hermes/.venv --no-install-project --sealed --record-selection \
     --extra all --extra messaging --extra otlp --extra anthropic --extra bedrock \
-    --extra azure-identity --extra matrix --extra google-chat --extra fal --extra documents
+    --extra azure-identity --extra matrix --extra google-chat --extra fal --extra documents "$@"
 
 # Icons render on the runtime environment: Pillow and resvg-py are core
 # dependencies. A stage of its own so the frontend stage keeps building its

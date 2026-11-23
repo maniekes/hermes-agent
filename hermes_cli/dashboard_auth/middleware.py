@@ -295,7 +295,12 @@ async def gated_auth_middleware(
     own_origin = _own_origin_writes(request)
     other_page = not own_origin and _browser_says_other_page(request)
     cookie_logout = (own_origin or other_page) and request.url.path == "/auth/logout"
-    if _path_is_public(request.url.path) and not cookie_logout:
+    push_script = (
+        getattr(request.app.state, "ui_surface", None) == "webapp"
+        and request.method in {"GET", "HEAD"}
+        and request.url.path == "/hermes-notifications-sw.js"
+    )
+    if (_path_is_public(request.url.path) or push_script) and not cookie_logout:
         return await call_next(request)
     # RFC 8252 native-app bearer path: the same provider-minted access token the cookie flow
     # stores, verified with the same provider stack, no cookie read or set. A presented-but-

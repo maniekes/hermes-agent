@@ -293,6 +293,15 @@ def mount_spa(application: FastAPI):
     mount_preview_assets(application)
     application.mount("/assets", serve_assets, name="assets")
 
+    @application.api_route("/hermes-notifications-sw.js", methods=["GET", "HEAD"])
+    async def notification_worker():
+        if getattr(application.state, "ui_surface", None) == "webapp":
+            dist = web_dist().resolve()
+            script = (dist / "hermes-notifications-sw.js").resolve()
+            if script.is_relative_to(dist) and script.is_file():
+                return FileResponse(script, media_type="text/javascript", headers={"Cache-Control": "no-cache"})
+        return JSONResponse({"error": "not found"}, status_code=404)
+
     @application.get("/{full_path:path}")
     async def serve_spa(full_path: str, request: Request):
         prefix = _normalise_prefix(request.headers.get("x-forwarded-prefix"))

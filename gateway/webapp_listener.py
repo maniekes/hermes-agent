@@ -43,6 +43,7 @@ class WebappSettings:
     public_url: str = ""
     #: Why a ``webapp:`` block that asks for the Webapp keeps it off (it cannot be used), else None.
     reason: str | None = None
+    web_push: bool = False
 
     @property
     def bind(self) -> tuple[str, int]:
@@ -58,6 +59,7 @@ class WebappMount:
     dist: Path
     home: Path
     public_url: str = ""
+    web_push: bool = False
 
 
 def _config_document(home: Path) -> dict:
@@ -109,7 +111,7 @@ def webapp_settings(home) -> WebappSettings:
     if public_url is None:
         return off(f"webapp.public_url must be an http:// or https:// address with no credentials, "
                    f"query or fragment in {path}", configured)
-    return replace(configured, enabled=True)
+    return replace(configured, enabled=True, web_push=block.get("web_push") is True)
 
 
 def _configured_address(block: dict) -> tuple[str | None, int | None, str | None]:
@@ -205,7 +207,8 @@ def listener_plan(home) -> tuple[str, int, WebappMount | None, str | None]:
         return (*settings.bind, None, settings.reason)
     from hermes_cli.config import get_project_root
     from hermes_cli.webapp import webapp_dist_dir
-    mount = WebappMount(dist=webapp_dist_dir(get_project_root()), home=Path(home), public_url=settings.public_url)
+    mount = WebappMount(dist=webapp_dist_dir(get_project_root()), home=Path(home),
+                        public_url=settings.public_url, web_push=settings.web_push)
     return (*settings.bind, mount, None)
 
 

@@ -857,6 +857,8 @@ app.include_router(_chat_ws_routes.router)
 app.include_router(_chat_workspaces_routes.router)
 app.include_router(_dashboard_ui_routes.router)
 app.include_router(_webapp_routes.router)
+from hermes_cli.web_routers import web_push as _web_push_routes
+app.include_router(_web_push_routes.router)
 # The saved-connections proxy checks its surface per request (WebSocket routes take no Request).
 app.include_router(_webapp_relay_proxy_routes.router)
 app.include_router(_peer_routes.router)
