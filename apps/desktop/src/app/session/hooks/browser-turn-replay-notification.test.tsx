@@ -1,13 +1,22 @@
 import type { GatewayEvent } from '@hermes/shared'
 import { QueryClient } from '@tanstack/react-query'
 import { act, cleanup, renderHook } from '@testing-library/react'
+import { atom } from 'nanostores'
 import { useRef } from 'react'
-import { afterEach, beforeEach, expect, it, vi } from 'vitest'
+import { afterEach, beforeAll, beforeEach, expect, it, vi } from 'vitest'
 
 import { HermesGateway } from '@/api/client'
+import type { ComposerScope } from '@/app/chat/composer/scope'
+import { paneMirror } from '@/app/chat/pane-mirror'
+import { useSessionTileActions } from '@/app/chat/session-tile-actions'
+import { useSessionTileDelegate } from '@/app/contrib/hooks/use-session-tile-delegate'
 import { createSessionRpcDispatcher } from '@/app/contrib/session-rpc-dispatcher'
+import { group } from '@/components/pane-shell/tree/model'
+import { $layoutTree, declareDefaultTree, watchContributedPanes } from '@/components/pane-shell/tree/store'
+import { registry } from '@/contrib/registry'
 import { getLatestSessionMessages } from '@/hermes'
 import { resetInFlightTurnJournalStateForTests } from '@/lib/inflight-turn-journal'
+import { createComposerAttachmentScope } from '@/store/composer'
 import { reportPrimaryGatewayState, setPrimaryGateway } from '@/store/gateway'
 import { __resetNativeNotifyBaselineForTests, withinNativeNotifyBaseline } from '@/store/notify-baseline'
 import { $activeGatewayProfile } from '@/store/profile'
@@ -23,7 +32,17 @@ import {
   setSelectedStoredSessionId,
   setSessions
 } from '@/store/session'
-import { clearAllSessionStates } from '@/store/session-states'
+import {
+  $focusedRuntimeId,
+  $sessionTiles,
+  clearAllSessionStates,
+  closeSessionTile,
+  discardSessionTile,
+  focusOpenSession,
+  openSessionTile,
+  patchSessionTile,
+  sessionTileDelegate
+} from '@/store/session-states'
 import { makeSessionInfo } from '@/test/session-info'
 import type { SessionMessage } from '@/types/hermes'
 
@@ -44,6 +63,30 @@ vi.mock('@/store/profile', async original => ({
 const noop = async () => undefined
 const notify = vi.fn(async () => true)
 let clock = Date.now()
+
+beforeAll(() => {
+  const dispose = registry.register({
+    id: 'workspace',
+    area: 'panes',
+    data: { placement: 'main', uncloseable: true },
+    render: () => null,
+    title: 'Chat'
+  })
+
+  watchContributedPanes()
+  paneMirror({
+    source: $sessionTiles,
+    key: tile => tile.storedSessionId,
+    prefix: 'session-tile',
+    dir: () => 'center',
+    minWidth: '20rem',
+    title: id => id,
+    render: () => null,
+    close: closeSessionTile
+  })()
+
+  return dispose
+})
 
 beforeEach(() => {
   clock += 10_000
@@ -68,6 +111,12 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup()
+
+  for (const tile of $sessionTiles.get()) {
+    discardSessionTile(tile.storedSessionId)
+  }
+
+  $layoutTree.set(null)
 
   setPrimaryGateway(null)
   delete window.document.documentElement.dataset.hermesDesktopHost
@@ -125,6 +174,7 @@ interface Scenario {
   foreground?: boolean
   interrupted?: boolean
   rewind?: 'regenerate' | 'edit'
+  tile?: boolean
   expected: number
 }
 
@@ -159,13 +209,16 @@ const scenarios: Scenario[] = [
   { name: 'foreground existing chat', chat: 'warm', replay: 'pending', foreground: true, expected: 0 },
   { name: 'interrupted turn during replay', chat: 'warm', replay: 'pending', interrupted: true, expected: 0 },
   { name: 'regenerate', chat: 'cold', rewind: 'regenerate', expected: 1 },
-  { name: 'edit and resubmit', chat: 'cold', rewind: 'edit', expected: 1 }
+  { name: 'edit and resubmit', chat: 'cold', rewind: 'edit', expected: 1 },
+  { name: 'focused chat tile with a different main session', chat: 'cold', tile: true, expected: 1 },
+  { name: 'foreground chat tile', chat: 'cold', tile: true, foreground: true, expected: 0 }
 ]
 
 it.each(scenarios)('dispatches $expected response-ready alerts for $name', async scenario => {
   const isNew = scenario.chat === 'new'
   // The canonical gateway uses the stored ID as its runtime address.
   const sessionId = isNew ? 'example-new-chat' : 'example-existing-chat'
+  const mainSessionId = scenario.tile ? 'example-main-chat' : sessionId
   const admissionId = 'example-admission'
 
   const messages: SessionMessage[] = isNew
@@ -176,19 +229,18 @@ it.each(scenarios)('dispatches $expected response-ready alerts for $name', async
       ]
 
   if (!isNew) {
-    setSessions([
-      makeSessionInfo({ id: sessionId,  profile: 'default', source: 'local',
-        message_count: messages.length, is_active: true })
-    ])
+    setSessions([...new Set([sessionId, mainSessionId])].map(id =>
+      makeSessionInfo({ id, profile: 'default', source: 'local', message_count: messages.length, is_active: true })
+    ))
   }
 
   vi.spyOn(window.document, 'hidden', 'get').mockReturnValue(!scenario.foreground)
   vi.spyOn(window.document, 'hasFocus').mockReturnValue(Boolean(scenario.foreground))
-  vi.mocked(getLatestSessionMessages).mockResolvedValue({ session_id: sessionId, messages })
+  vi.mocked(getLatestSessionMessages).mockImplementation(async id => ({ session_id: id, messages }))
 
   const queryClient = new QueryClient()
   const submission: { params?: Record<string, unknown> } = {}
-  let route: string | null = isNew ? null : sessionId
+  let route: string | null = isNew ? null : mainSessionId
 
   const client = new HermesGateway()
   Socket.sockets = []
@@ -211,17 +263,19 @@ it.each(scenarios)('dispatches $expected response-ready alerts for $name', async
     }
 
     if (['session.resume', 'session.create'].includes(method)) {
+      const target = params.session_id ?? sessionId
+
       return {
-        ref: { session_id: sessionId },
-        session_id: sessionId,
-        stored_session_id: sessionId,
-        resumed: sessionId,
+        ref: { session_id: target },
+        session_id: target,
+        stored_session_id: target,
+        resumed: target,
         messages,
         message_count: messages.length,
         running: false,
         revision: 1,
         execution_generation: 1,
-        info: { stored_session_id: sessionId, profile_name: 'default' }
+        info: { stored_session_id: target, profile_name: 'default' }
       }
     }
 
@@ -258,7 +312,7 @@ it.each(scenarios)('dispatches $expected response-ready alerts for $name', async
       getRouteToken,
       getRoutedStoredSessionId,
       navigate: () => {
-        route = sessionId
+        route = mainSessionId
       },
       requestGateway,
       routedSessionId: null
@@ -290,7 +344,26 @@ it.each(scenarios)('dispatches $expected response-ready alerts for $name', async
       sttEnabled: false
     })
 
-    return { cache, actions, stream, prompts }
+    useSessionTileDelegate({
+      ...cache,
+      archiveSession: actions.archiveSession,
+      branchLoadedSession: actions.branchLoadedSession,
+      branchStoredSession: actions.branchStoredSession,
+      executeSlashCommand: prompts.executeSlashCommand,
+      removeSession: actions.removeSession,
+      requestGateway
+    })
+
+    const scope = useRef<ComposerScope>({
+      $awaitingInput: atom(false),
+      $messages: atom([]),
+      attachments: createComposerAttachmentScope(),
+      target: `tile:${sessionId}`
+    }).current
+
+    const tile = useSessionTileActions({ requestGateway, runtimeId: sessionId, scope, storedSessionId: sessionId })
+
+    return { cache, actions, stream, prompts, tile }
   })
 
   setPrimaryGateway(client)
@@ -311,7 +384,7 @@ it.each(scenarios)('dispatches $expected response-ready alerts for $name', async
     return socket
   }
 
-  const resume = () => hook.result.current.actions.resumeSession(sessionId, true)
+  const resume = () => hook.result.current.actions.resumeSession(mainSessionId, true)
 
   try {
     let socket = await connect()
@@ -319,6 +392,17 @@ it.each(scenarios)('dispatches $expected response-ready alerts for $name', async
 
     if (!isNew) {
       await act(resume)
+    }
+
+    if (scenario.tile) {
+      await act(async () => {
+        declareDefaultTree(group(['workspace']))
+        openSessionTile(sessionId, 'center', 'workspace')
+        const runtimeId = await sessionTileDelegate()!.resumeTile(sessionId)
+        patchSessionTile(sessionId, { runtimeId })
+        expect(focusOpenSession(sessionId)).toBe('tile')
+      })
+      expect($focusedRuntimeId.get()).toBe(sessionId)
     }
 
     if (scenario.replay) {
@@ -388,15 +472,16 @@ it.each(scenarios)('dispatches $expected response-ready alerts for $name', async
       expect(submission.params).not.toHaveProperty('truncate_before_row_id')
     } else if (scenario.origin !== 'observer') {
       await act(async () => {
-        expect(await hook.result.current.prompts.submitText('Example question')).toBe(true)
+        const sender = scenario.tile ? hook.result.current.tile : hook.result.current.prompts
+        expect(await sender.submitText('Example question')).toBe(true)
       })
       expect(submission.params?.session_id).toBe(sessionId)
       expect(typeof submission.params?.submission_id).toBe('string')
     }
 
-    expect($activeSessionId.get()).toBe(sessionId)
-    expect($selectedStoredSessionId.get()).toBe(sessionId)
-    expect(hook.result.current.cache.activeSessionIdRef.current).toBe(sessionId)
+    expect($activeSessionId.get()).toBe(mainSessionId)
+    expect($selectedStoredSessionId.get()).toBe(mainSessionId)
+    expect(hook.result.current.cache.activeSessionIdRef.current).toBe(mainSessionId)
 
     const stamp = { session_id: sessionId, authority_epoch: 1, execution_generation: 2, admission_id: admissionId }
 

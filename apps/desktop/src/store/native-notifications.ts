@@ -17,7 +17,7 @@ import {
 } from './prompts'
 import { isSessionGone, isSessionGoneForBackgroundPolling, markSessionGone } from './runtime-gone'
 import { $activeSessionId, ownerLookupSessionRows, sessionMatchesStoredId } from './session'
-import { storedSessionIdForRuntimeId } from './session-states'
+import { $focusedRuntimeId, storedSessionIdForRuntimeId } from './session-states'
 
 export type { HermesOpenTarget }
 
@@ -141,7 +141,12 @@ function isBackgrounded(): boolean {
   return typeof document.hasFocus === 'function' && !document.hasFocus()
 }
 
-function shouldFire(kind: NativeNotificationKind, sessionId?: null | string, global = false): boolean {
+function shouldFire(
+  kind: NativeNotificationKind,
+  sessionId?: null | string,
+  global = false,
+  submittedBrowserTurn = false
+): boolean {
   // Global notifications aren't tied to a chat session (e.g. pet generation,
   // which runs from the command center with no active conversation). They fire
   // whenever the user is away, with no session-match requirement — otherwise a
@@ -155,9 +160,13 @@ function shouldFire(kind: NativeNotificationKind, sessionId?: null | string, glo
     return isBackgrounded() || (Boolean(sessionId) && sessionId !== $activeSessionId.get())
   }
 
-  // Completion kinds: only the active session, only while away — so a busy
-  // gateway (messaging, kanban, cron) can't spam a toast per background session.
-  return isBackgrounded() && Boolean(sessionId) && sessionId === $activeSessionId.get()
+  // The focused browser panel can own a different live chat from the main view.
+  // Other completions still use the primary session's existing policy.
+  return (
+    isBackgrounded() &&
+    Boolean(sessionId) &&
+    sessionId === (submittedBrowserTurn ? $focusedRuntimeId.get() : $activeSessionId.get())
+  )
 }
 
 /** Last-resort label for a session the renderer has no row for (yet): the id
@@ -244,7 +253,7 @@ function dispatchNotification(input: NativeNotificationInput, submittedBrowserTu
     return false
   }
 
-  if (!shouldFire(input.kind, input.sessionId, input.global)) {
+  if (!shouldFire(input.kind, input.sessionId, input.global, submittedBrowserTurn)) {
     return false
   }
 
