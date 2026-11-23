@@ -374,3 +374,63 @@ def test_hidden_profile_disable_does_not_leave_queued_delivery_alive(
         restarted.deliver_one(fixture.default, "default", generation())
     assert [data["profile"] for _, data in fixture.sends] == ["default"]
     assert _enroll(browser, endpoint, profile="beta").status_code == 200
+
+
+def test_logout_and_retry_finish_while_existing_send_is_in_flight(fixture, gated, endpoint, credentials, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+    from gateway.web_push import delivery
+
+    browser, authority = fixture.browser, fixture.default
+    entered, release = Event(), Event()
+    posted = []
+
+    class Connection:
+        def __init__(self, *_args, **_kwargs):
+            entered.set()
+            assert release.wait(15)
+
+        def request(self, *_args, **_kwargs):
+            posted.append(True)
+
+        def getresponse(self):
+            return SimpleNamespace(status=503, getheader=lambda name: None)
+
+        def close(self):
+            pass
+
+    def logout(client):
+        return client.post("/auth/logout", headers=_headers(PHONE), follow_redirects=False)
+
+    monkeypatch.setattr(delivery, "_PushConnection", Connection)
+    fixture.runner.web_push = push = WebPush(credentials, control_db=authority.db)
+    for profile in ("default", "beta"):
+        assert _enroll(browser, endpoint, profile=profile).status_code == 200
+        assert _act(browser, "test", profile=profile).status_code == 200
+    old_cookies = dict(browser.cookies)
+    replay = gated.browser()
+    replay.cookies.update(old_cookies)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        sending = pool.submit(push.deliver_one, authority, "default", generation())
+        try:
+            assert entered.wait(4)
+            first = pool.submit(logout, browser).result(timeout=4)
+            assert (first.status_code, first.headers["location"]) == (302, "/login")
+            assert browser.get(PATH, headers=_headers(PHONE)).status_code == 401
+            assert pool.submit(logout, replay).result(timeout=4).status_code == 302
+            assert not sending.done() and posted == []
+        finally:
+            release.set()
+        assert sending.result(timeout=5)
+
+    # The retryable failure cannot schedule another attempt, and the other profile's queue is fenced.
+    _due_now(authority)
+    assert not push.deliver_one(authority, "default", generation())
+    assert push.deliver_one(fixture.beta, "beta", generation())
+    assert posted == [True]
+
+    _sign_in_with_oauth(browser)
+    assert _enroll(browser, endpoint).status_code == 200
+    replay.cookies.update(old_cookies)
+    assert logout(replay).status_code == 302
+    assert browser.get(PATH, headers=_headers(PHONE)).json()["active"] is True

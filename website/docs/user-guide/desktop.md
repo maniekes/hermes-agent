@@ -198,7 +198,9 @@ Deploy with the same origin and keep VAPID and storage keys stable across restar
 origin changes, browser storage reset and global `hermes webapp --sign-out` require re-enrollment.
 An ordinary cookie expiry leaves enrollment in place so an alert can reopen through sign-in.
 Signing out explicitly in the Webapp revokes that browser installation and allows the next user
-to enroll. Rotating the storage key also requires re-enrollment. The new tables are additive.
+to enroll. Sign-out cancels queued deliveries and retries for the revoked enrollment and completes
+without waiting for a send attempt already in progress. That attempt can still produce an alert.
+Rotating the storage key also requires re-enrollment. The new tables are additive.
 For rollback, turn off `webapp.web_push` and deploy the prior backend and matching Webapp.
 Disable browser enrollments before rolling forward again if old subscriptions should be discarded.
 

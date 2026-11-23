@@ -76,12 +76,11 @@ async def revoke_on_logout(request):
         # The cookie proves this exact enrollment even if the access cookie is gone.
         if (owner is None or recorded_login != login or principal not in (None, owner)
                 or not hmac.compare_digest(proof, _logout_proof(key, device, owner, grant))):
-            return False
-        return store.revoke_device(conn, device, owner, login)
+            return
+        store.revoke_device(conn, device, owner, login)
 
-    if await run_in_threadpool(_control_db(state)._execute_write, revoke_proven_grant):
-        push = getattr(getattr(state, "gateway_runner", None), "web_push", None)
-        await run_in_threadpool(_confirm_revocation, push, device)
+    # Logout commits the revocation and lets an already in-flight attempt finish.
+    await run_in_threadpool(_control_db(state)._execute_write, revoke_proven_grant)
 
 
 def _context(request, profile):
