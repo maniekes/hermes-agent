@@ -35,7 +35,6 @@ import {
   resumeDesktopBootForRetry,
   setDesktopBootStep
 } from '@/store/boot'
-import { notificationDiagnosticRecorder } from '@/store/browser-notification-diagnostics'
 import { resetBackgroundPollingGuard } from '@/store/composer-status'
 import { primaryWireSource, recordConnectionWire } from '@/store/connection-wire'
 import { noteBackendDrop, noteBackendExited } from '@/store/desktop-metrics'
@@ -1090,10 +1089,6 @@ export function useGatewayBoot({
 
     const deliverGatewayEvent = (event: GatewayEvent) => {
       if (!eventDedupe.admit(event)) {
-        if (event.type === 'message.complete') {
-          notificationDiagnosticRecorder()?.({ step: 'gateway', outcome: 'duplicate', replayed: Boolean(event.replayed) })
-        }
-
         return
       }
 

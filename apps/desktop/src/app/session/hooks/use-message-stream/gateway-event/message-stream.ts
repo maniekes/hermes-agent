@@ -12,7 +12,6 @@ import { triggerHaptic } from '@/lib/haptics'
 import { hostHas } from '@/lib/host-capabilities'
 import { turnDoneNotificationBody } from '@/lib/turn-done-notification-body'
 import { billingCtaLabel, clearBillingBlock, runBillingRecovery, setBillingBlock } from '@/store/billing-block'
-import { notificationDiagnosticRecorder } from '@/store/browser-notification-diagnostics'
 import { clearSettledClarifyRequest } from '@/store/clarify'
 import { setSessionCompacting } from '@/store/compaction'
 import { noteFreeTierTurnComplete } from '@/store/free-tier-sign-in'
@@ -404,13 +403,7 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
   }
 
   if (event.type === 'message.complete') {
-    const record = notificationDiagnosticRecorder()
-    const replayed = Boolean(event.replayed)
-    record?.({ step: 'completion', outcome: 'handled', replayed })
-
     if (!sessionId) {
-      record?.({ step: 'completion', outcome: 'no-session', replayed })
-
       return true
     }
 
@@ -451,12 +444,6 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
 
     const browser = hostHas('browserNotifications')
     const ownTurn = browser && takeBrowserNotificationTurn(payload?.persisted_turn?.submission_id, event.admission_id)
-
-    if (browser && !ownTurn) {
-      record?.({ step: 'completion', outcome: 'not-owned', replayed })
-    } else if (browser && payload?.status !== 'complete') {
-      record?.({ step: 'completion', outcome: 'not-success', replayed })
-    }
 
     // Reconnect marks buffered live frames as replayed too. The pending submission
     // in this page establishes ownership and is consumed by the first terminal frame.

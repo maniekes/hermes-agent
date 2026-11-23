@@ -3,7 +3,6 @@
  * The tab title can still flash when the OS notification is unavailable.
  */
 
-import { type NotificationDiagnosticRecorder, notificationDiagnosticRecorder } from '@/store/browser-notification-diagnostics'
 import { flagTabAttention } from '@/store/browser-tab-attention'
 
 export type BrowserNotificationPermission = 'default' | 'denied' | 'granted' | 'insecure' | 'unsupported'
@@ -129,8 +128,7 @@ async function showWorkerNotification(
   options: NotificationOptions,
   sessionId: string | undefined,
   reopenSessionId: string | undefined,
-  { basePath, reopenProfile }: BrowserNotificationContext,
-  record?: NotificationDiagnosticRecorder
+  { basePath, reopenProfile }: BrowserNotificationContext
 ): Promise<boolean> {
   const root = new URL(`${basePath}/`, window.location.origin)
   const script = new URL(WORKER_FILE, root).href
@@ -138,32 +136,11 @@ async function showWorkerNotification(
 
   // Give the worker its own scope so it cannot take over the app's navigation
   // or replace a registration for the installed app.
-  record?.({ step: 'browser', outcome: 'worker-registering' })
-  let registration: ServiceWorkerRegistration
+  const registration = await serviceWorker.register(script, {
+    scope: new URL('hermes-notifications/', root).href
+  })
 
-  try {
-    registration = await serviceWorker.register(script, {
-      scope: new URL('hermes-notifications/', root).href
-    })
-  } catch (error) {
-    record?.({ step: 'browser', outcome: 'worker-register-failed' })
-
-    throw error
-  }
-
-  record?.({ step: 'browser', outcome: 'worker-registered' })
-
-  let worker: ServiceWorker
-
-  try {
-    worker = await activeNotificationWorker(registration)
-  } catch (error) {
-    record?.({ step: 'browser', outcome: 'worker-activation-failed' })
-
-    throw error
-  }
-
-  record?.({ step: 'browser', outcome: 'worker-active' })
+  const worker = await activeNotificationWorker(registration)
 
   return new Promise((resolve, reject) => {
     const { port1, port2 } = new MessageChannel()
@@ -180,13 +157,12 @@ async function showWorkerNotification(
       }
     }
 
-    const timer = setTimeout(() => {
-      record?.({ step: 'browser', outcome: 'worker-reply-timeout' })
-      finish(new Error('Notification service worker did not respond'))
-    }, NOTIFICATION_TIMEOUT_MS)
+    const timer = setTimeout(
+      () => finish(new Error('Notification service worker did not respond')),
+      NOTIFICATION_TIMEOUT_MS
+    )
 
     port1.onmessage = ({ data }) => {
-      record?.({ step: 'browser', outcome: data?.ok === true ? 'worker-shown' : 'worker-show-failed' })
       finish(
         data?.ok === true
           ? undefined
@@ -199,9 +175,7 @@ async function showWorkerNotification(
         { type: 'hermes:show-notification', title, options, sessionId, reopenSessionId, reopenProfile },
         [port2]
       )
-      record?.({ step: 'browser', outcome: 'worker-posted' })
     } catch (error) {
-      record?.({ step: 'browser', outcome: 'worker-post-failed' })
       finish(error instanceof Error ? error : new Error(String(error)))
     }
   })
@@ -216,15 +190,7 @@ export async function showBrowserNotification(
 
   flagTabAttention(title)
 
-  const record = notificationDiagnosticRecorder()
-  const permission = browserNotificationPermission()
-  record?.({
-    step: 'permission',
-    outcome: permission === 'default' || permission === 'denied' || permission === 'granted' ||
-      permission === 'insecure' || permission === 'unsupported' ? permission : 'unknown'
-  })
-
-  if (permission !== 'granted') {
+  if (browserNotificationPermission() !== 'granted') {
     return false
   }
 
@@ -246,20 +212,11 @@ export async function showBrowserNotification(
     const serviceWorker = navigator.serviceWorker
 
     if (!(error instanceof TypeError) || !serviceWorker) {
-      record?.({
-        step: 'browser',
-        outcome: error instanceof TypeError ? 'constructor-unavailable-worker-missing' : 'constructor-rejected'
-      })
-
       throw error
     }
 
-    record?.({ step: 'browser', outcome: 'constructor-fallback' })
-
-    return showWorkerNotification(serviceWorker, title, options, focusSessionId, payload.focusSessionId, context, record)
+    return showWorkerNotification(serviceWorker, title, options, focusSessionId, payload.focusSessionId, context)
   }
-
-  record?.({ step: 'browser', outcome: 'constructor-used' })
 
   notification.onclick = () => {
     window.focus()
@@ -283,19 +240,12 @@ export async function showBrowserNotification(
       }
     }
 
-    const timer = setTimeout(() => {
-      record?.({ step: 'browser', outcome: 'constructor-timeout' })
-      finish(new Error('Browser notification did not report delivery'))
-    }, NOTIFICATION_TIMEOUT_MS)
+    const timer = setTimeout(
+      () => finish(new Error('Browser notification did not report delivery')),
+      NOTIFICATION_TIMEOUT_MS
+    )
 
-    notification.onshow = () => {
-      record?.({ step: 'browser', outcome: 'constructor-shown' })
-      finish()
-    }
-
-    notification.onerror = () => {
-      record?.({ step: 'browser', outcome: 'constructor-show-failed' })
-      finish(new Error('Browser notification failed to show'))
-    }
+    notification.onshow = () => finish()
+    notification.onerror = () => finish(new Error('Browser notification failed to show'))
   })
 }

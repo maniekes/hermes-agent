@@ -8,7 +8,6 @@ import {
   resolveGatewayEventSessionId,
   UNSCOPED_STREAM_EVENT_TYPES
 } from '@/lib/gateway-events'
-import { notificationDiagnosticRecorder } from '@/store/browser-notification-diagnostics'
 import { reconcileSessionCompacting } from '@/store/compaction'
 import { $gateway, activeGatewayConnectionId } from '@/store/gateway'
 import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
@@ -201,9 +200,6 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
 
   return useCallback(
     (event: GatewayEvent) => {
-      const record = event.type === 'message.complete' ? notificationDiagnosticRecorder() : undefined
-      const replayed = Boolean(event.replayed)
-      record?.({ step: 'gateway', outcome: 'received', replayed })
       const payload = event.payload as GatewayEventPayload | undefined
 
       // "From the active profile" must mean "from the active SOURCE": every
@@ -231,16 +227,12 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
       unscopedStreamSessionIdsRef.current = route.nextUnscopedStreamSessionIds
 
       if (route.drop) {
-        record?.({ step: 'gateway', outcome: 'route-dropped', replayed })
-
         return
       }
 
       const sessionId = route.sessionId
 
       if (!admitExecutionEvent(executionAuthorities.current, event, sessionId, deps)) {
-        record?.({ step: 'gateway', outcome: 'authority-dropped', replayed })
-
         return
       }
 
@@ -265,8 +257,6 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         )
 
         if (!hasLiveTurn) {
-          record?.({ step: 'gateway', outcome: 'unscoped-not-live', replayed })
-
           return
         }
       }

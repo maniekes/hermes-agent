@@ -2,19 +2,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { createClientSessionState } from '@/lib/chat-runtime'
 
-import {
-  $notificationDiagnostics,
-  clearNotificationDiagnostics,
-  startNotificationDiagnostics,
-  stopNotificationDiagnostics
-} from './browser-notification-diagnostics'
 import { $gateway } from './gateway'
 import { setHapticsMuted } from './haptics'
 import {
   clearPluginNotifyHandlers,
   dispatchNativeNotification,
   dispatchPluginNativeNotification,
-  dispatchSubmittedBrowserTurnNotification,
   invokePluginNotifyAction,
   invokePluginNotifyActivate,
   NATIVE_NOTIFICATION_KINDS,
@@ -412,70 +405,4 @@ describe('app sounds mute', () => {
   it('leaves OS notification sound alone when not muted', () => {
     expect(fire()).toEqual([undefined, undefined])
   })
-})
-
-
-describe('opt-in notification decision report', () => {
-  afterEach(clearNotificationDiagnostics)
-
-  const readOutcomes = () => {
-    stopNotificationDiagnostics()
-    const { report } = $notificationDiagnostics.get()
-
-    return report.split('\n').slice(1).map(line => JSON.parse(line))
-  }
-
-  it('reports preference, baseline, foreground, missing session and throttle decisions without retrying a gate', () => {
-    const sessionId = freshSession()
-    const notification = { kind: 'turnDone' as const, sessionId, title: 'diagnostic-title-canary' }
-    setActiveSessionId(sessionId)
-    startNotificationDiagnostics()
-    setNativeNotifyKind('turnDone', false)
-    expect(dispatchNativeNotification(notification)).toBe(false)
-    setNativeNotifyKind('turnDone', true)
-    markNativeNotifyBaseline()
-    expect(dispatchNativeNotification(notification)).toBe(false)
-    setWindowState({ focused: true, hidden: false })
-    expect(dispatchSubmittedBrowserTurnNotification(notification)).toBe(false)
-    setWindowState({ focused: false, hidden: true })
-    expect(dispatchSubmittedBrowserTurnNotification({ title: notification.title })).toBe(false)
-    expect(dispatchSubmittedBrowserTurnNotification(notification)).toBe(true)
-    expect(dispatchSubmittedBrowserTurnNotification(notification)).toBe(false)
-    expect(notify).toHaveBeenCalledOnce()
-    const filters = readOutcomes().filter(entry => entry.step === 'notify-filter').map(entry => entry.outcome)
-    expect(filters).toEqual(['preferences', 'baseline', 'foreground', 'no-session', 'passed', 'throttled'])
-    expect($notificationDiagnostics.get().report).not.toContain(notification.title)
-  })
-
-  it.each(['returned-true', 'returned-false', 'rejected', 'missing'] as const)(
-    'records a bridge result of %s without storing payload data',
-    async outcome => {
-      const privateValue = 'private-error-body-url-canary'
-      const sessionId = freshSession()
-      setActiveSessionId(sessionId)
-      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
-
-      try {
-        if (outcome === 'missing') {
-          delete desktopWindow.hermesDesktop
-        } else if (outcome === 'rejected') {
-          notify.mockRejectedValueOnce(new Error(privateValue))
-        } else {
-          notify.mockResolvedValueOnce(outcome === 'returned-true')
-        }
-
-        startNotificationDiagnostics()
-        expect(dispatchSubmittedBrowserTurnNotification({
-          sessionId, title: privateValue, body: privateValue, tag: privateValue
-        })).toBe(true)
-        await Promise.resolve()
-        const steps = readOutcomes().filter(entry => entry.step === 'bridge').map(entry => entry.outcome)
-        expect(steps).toEqual(outcome === 'missing' ? ['missing'] : ['attempted', outcome])
-        expect($notificationDiagnostics.get().report).not.toContain(privateValue)
-        expect($notificationDiagnostics.get().report).not.toContain(sessionId)
-      } finally {
-        warn.mockRestore()
-      }
-    }
-  )
 })

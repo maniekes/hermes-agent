@@ -49,21 +49,6 @@ export const esNotifications = {
       unsupported: 'Este navegador no puede mostrar notificaciones. El título de la pestaña sigue parpadeando.'
     }
   },
-  diagnostics: {
-    title: "Diagnóstico de notificaciones",
-    intro: "Registra decisiones en esta página durante un máximo de cinco minutos. El informe queda en memoria, excluye el contenido de las conversaciones y se borra al recargar.",
-    frontendBuild: "Compilación del frontend",
-    start: "Iniciar captura",
-    stopAndCopy: "Detener y copiar el informe",
-    copyReport: "Copiar informe",
-    clear: "Borrar",
-    capturing: "Captura en curso.",
-    stopped: "Captura detenida.",
-    expired: "La captura ha caducado. El informe está listo para copiar.",
-    copied: "Informe copiado.",
-    copyFailed: "Portapapeles no disponible. Selecciona y copia el informe de abajo.",
-    report: "Informe de notificaciones"
-  },
   test: 'Enviar notificación de prueba',
   testTitle: 'Hermes',
   testBody: 'Las notificaciones funcionan.',

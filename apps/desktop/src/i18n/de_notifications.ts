@@ -48,21 +48,6 @@ export const deNotifications = {
       unsupported: 'Dieser Browser kann keine Benachrichtigungen anzeigen. Der Tab-Titel blinkt trotzdem.'
     }
   },
-  diagnostics: {
-    title: "Benachrichtigungsdiagnose",
-    intro: "Erfasst Entscheidungen auf dieser Seite bis zu fünf Minuten. Der Bericht bleibt im Arbeitsspeicher, enthält keine Gesprächsinhalte und wird beim Neuladen gelöscht.",
-    frontendBuild: "Frontend-Build",
-    start: "Aufzeichnung starten",
-    stopAndCopy: "Stoppen und Bericht kopieren",
-    copyReport: "Bericht kopieren",
-    clear: "Löschen",
-    capturing: "Aufzeichnung läuft.",
-    stopped: "Aufzeichnung gestoppt.",
-    expired: "Aufzeichnung abgelaufen. Der Bericht kann kopiert werden.",
-    copied: "Bericht kopiert.",
-    copyFailed: "Zwischenablage nicht verfügbar. Bericht unten auswählen und kopieren.",
-    report: "Benachrichtigungsbericht"
-  },
   test: 'Testbenachrichtigung senden',
   testTitle: 'Hermes',
   testBody: 'Benachrichtigungen funktionieren.',

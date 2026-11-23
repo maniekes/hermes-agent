@@ -48,21 +48,6 @@ export const enNotifications = {
       unsupported: 'This browser cannot show notifications. The tab title still flashes.'
     }
   },
-  diagnostics: {
-    title: "Notification diagnostics",
-    intro: "Capture decisions in this page for up to five minutes. The report stays in memory, excludes chat content, and is cleared on reload.",
-    frontendBuild: "Frontend build",
-    start: "Start capture",
-    stopAndCopy: "Stop and copy report",
-    copyReport: "Copy report",
-    clear: "Clear",
-    capturing: "Capture running.",
-    stopped: "Capture stopped.",
-    expired: "Capture expired. The report is ready to copy.",
-    copied: "Report copied.",
-    copyFailed: "Clipboard unavailable. Select and copy the report below.",
-    report: "Notification report"
-  },
   test: 'Send test notification',
   testTitle: 'Hermes',
   testBody: 'Notifications are working.',

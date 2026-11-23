@@ -26,7 +26,6 @@ import {
 import { notify } from '@/store/notifications'
 
 import { CONTROL_TEXT } from './constants'
-import { NotificationDiagnostics } from './notification-diagnostics'
 import { ListRow, SectionHeading, SettingsContent, ToggleRow } from './primitives'
 import { notificationKindSettingId, SETTING_IDS, settingElementId } from './settings-manifest'
 import { useSettingDeepLink } from './use-setting-deep-link'
@@ -236,7 +235,6 @@ export function NotificationsSettings({ subpage }: NotificationsSettingsProps = 
             {copy.test}
           </Button>
           <Caption>{copy.focusedHint}</Caption>
-          {hostHas('browserNotifications') && <NotificationDiagnostics />}
         </div>
       )}
     </SettingsContent>

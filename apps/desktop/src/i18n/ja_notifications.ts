@@ -48,21 +48,6 @@ export const jaNotifications = {
       unsupported: 'このブラウザーは通知を表示できません。タブのタイトルは引き続き点滅します。'
     }
   },
-  diagnostics: {
-    title: "通知の診断",
-    intro: "このページの通知判定を最大5分間記録します。レポートはメモリ内に保持され、会話内容は含まれず、再読み込みすると消去されます。",
-    frontendBuild: "フロントエンドビルド",
-    start: "記録を開始",
-    stopAndCopy: "停止してレポートをコピー",
-    copyReport: "レポートをコピー",
-    clear: "消去",
-    capturing: "記録中です。",
-    stopped: "記録を停止しました。",
-    expired: "記録時間が終了しました。レポートをコピーできます。",
-    copied: "レポートをコピーしました。",
-    copyFailed: "クリップボードを利用できません。下のレポートを選択してコピーしてください。",
-    report: "通知レポート"
-  },
   test: 'テスト通知を送信',
   testTitle: 'Hermes',
   testBody: '通知は正常に動作しています。',

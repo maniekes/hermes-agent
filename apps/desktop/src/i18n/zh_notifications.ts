@@ -47,21 +47,6 @@ export const zhNotifications = {
       unsupported: '此浏览器无法显示通知。标签页标题仍会闪烁。'
     }
   },
-  diagnostics: {
-    title: "通知诊断",
-    intro: "记录此页面的通知判定，最长五分钟。报告仅保存在内存中，不包含聊天内容，重新加载时会清除。",
-    frontendBuild: "前端构建",
-    start: "开始记录",
-    stopAndCopy: "停止并复制报告",
-    copyReport: "复制报告",
-    clear: "清除",
-    capturing: "正在记录。",
-    stopped: "已停止记录。",
-    expired: "记录已到期，可以复制报告。",
-    copied: "已复制报告。",
-    copyFailed: "剪贴板不可用。请选择并复制下方的报告。",
-    report: "通知报告"
-  },
   test: '发送测试通知',
   testTitle: 'Hermes',
   testBody: '通知工作正常。',

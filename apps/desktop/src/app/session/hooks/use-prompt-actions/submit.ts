@@ -15,7 +15,6 @@ import {
   stopVoicePlayback,
   takeVoicePlaybackInterrupted
 } from '@/lib/voice-playback'
-import { notificationDiagnosticRecorder } from '@/store/browser-notification-diagnostics'
 import {
   $composerAttachments,
   type ComposerAttachment,
@@ -1159,30 +1158,19 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
 
                 const params: Record<string, unknown> = { ...prepared.params, session_id: liveId }
 
-                const record = notificationDiagnosticRecorder()
-
                 try {
                   if (hostHas('browserNotifications') && !retained) {
                     trackBrowserNotificationTurn(submissionId)
-                  } else if (retained) {
-                    record?.({ step: 'submission', outcome: 'retained' })
                   }
 
                   const receipt = await requestGateway<SubmitReceipt>('prompt.submit', params, PROMPT_SUBMIT_REQUEST_TIMEOUT_MS)
 
                   if (receipt?.submission_id === submissionId && receipt.admission_id) {
                     bindBrowserNotificationAdmission(submissionId, receipt.admission_id)
-                  } else {
-                    record?.({
-                      step: 'submission',
-                      outcome: receipt?.submission_id === submissionId ? 'receipt-no-admission' : 'receipt-no-match'
-                    })
                   }
 
                   return receipt
                 } catch (error) {
-                  record?.({ step: 'submission', outcome: 'request-rejected' })
-
                   // A retry whose payload no longer matches its admitted original (an attachment send
                   // offered back as text) is that original: settled as the dedupe it is, no new turn.
                   if (isAdmittedSubmissionConflict(error)) {

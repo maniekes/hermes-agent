@@ -15,21 +15,6 @@ export interface NotificationSettingsTranslations {
     requestFailed: string
     states: Record<'default' | 'denied' | 'granted' | 'insecure' | 'unsupported', string>
   }
-  diagnostics: {
-    title: string
-    intro: string
-    frontendBuild: string
-    start: string
-    stopAndCopy: string
-    copyReport: string
-    clear: string
-    capturing: string
-    stopped: string
-    expired: string
-    copied: string
-    copyFailed: string
-    report: string
-  }
   test: string
   testTitle: string
   testBody: string

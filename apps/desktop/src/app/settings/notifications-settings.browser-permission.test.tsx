@@ -116,9 +116,3 @@ it('reports a rejected permission request separately from a rejected send', asyn
   await sendTest()
   expect(notify).toHaveBeenLastCalledWith({ kind: 'info', message: expect.stringMatching(/test sent/i) })
 })
-
-it('offers opt-in notification diagnostics in the browser alerts panel', () => {
-  renderAlerts()
-  expect(screen.getByRole('button', { name: 'Start capture' })).toBeTruthy()
-  expect(screen.queryByRole('textbox', { name: 'Notification report' })).toBeNull()
-})
