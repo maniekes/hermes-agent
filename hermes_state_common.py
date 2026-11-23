@@ -468,6 +468,7 @@ CREATE TABLE IF NOT EXISTS system_prompts (
 
 CREATE TABLE IF NOT EXISTS sessions (
     id TEXT PRIMARY KEY,
+    response_ready TEXT NOT NULL DEFAULT 'inherit',
     runtime_revision INTEGER NOT NULL DEFAULT 0,
     runtime_generation INTEGER NOT NULL DEFAULT 0,
     source TEXT NOT NULL,
@@ -611,6 +612,7 @@ CREATE TABLE IF NOT EXISTS session_admissions (
     outcome TEXT,
     owner_epoch INTEGER,
     generation INTEGER,
+    response_ready_control INTEGER NOT NULL DEFAULT 0,
     UNIQUE (principal_id, target_session_id, request_id),
     CHECK (status != 'started' OR (owner_epoch IS NOT NULL AND generation IS NOT NULL))
 );

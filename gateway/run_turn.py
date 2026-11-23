@@ -829,6 +829,9 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
         enabled_toolsets, disabled_toolsets = self._resolve_turn_toolsets(user_config, source, platform_key)
         if policy:
             enabled_toolsets = policy_turn_toolsets(active_authority(self), policy, user_config, source.chat_id)
+            from gateway.web_push.conversation_tool import active_toolset
+            if policy_toolset := active_toolset():
+                enabled_toolsets = [*enabled_toolsets, policy_toolset]
         adapter = self._delivery_adapter_for(source)
         # Tool preview length (0 = no limit) and friendly tool labels (default on), per-platform.
         for _setter, _setting, _default, _cast in (

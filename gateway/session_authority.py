@@ -757,13 +757,23 @@ class SessionAuthority:
             payload['local_operator_v1'] = {
                 'profile_id': self.profile_id, 'session_id': request.ref.session_id,
                 'principal_id': actor.subject}
+        from gateway.web_push.conversation import owns_policy
+        can_control_push = owns_policy(self, request.ref, actor.subject) and 'session:control' in actor.capabilities
+
+        def bind_acceptance(conn, admission_id):
+            if can_control_push:
+                conn.execute("UPDATE session_admissions SET response_ready_control=1 WHERE admission_id=?",
+                             (admission_id,))
+            if _web_push_binding is not None:
+                _web_push_binding(conn, admission_id)
+
         def admit():
             try:
                 return admit_session_input(self.db, epoch=self.epoch, principal_id=actor.subject,
                                            session_id=request.ref.session_id, request_id=request.request_id,
                                            payload=payload, intent=request.intent, _replay_guard=_replay_guard,
                                            _authorize_write=self._admission_gate(_authorize_write, queue_only=queue_only),
-                                           _on_new_admission=_web_push_binding)
+                                           _on_new_admission=bind_acceptance if can_control_push else _web_push_binding)
             except Exception:
                 self._release_refused_capture(request, payload)
                 raise
