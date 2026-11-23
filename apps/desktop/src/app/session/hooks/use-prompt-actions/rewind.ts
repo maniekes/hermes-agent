@@ -10,10 +10,11 @@
  */
 
 import type { AppendMessage, ThreadMessage } from '@assistant-ui/react'
-import { JsonRpcGatewayError } from '@hermes/shared'
+import { JsonRpcGatewayError, randomUuid } from '@hermes/shared'
 
 import type { ClientSessionState } from '@/app/types'
 import { PROMPT_SUBMIT_REQUEST_TIMEOUT_MS } from '@/hermes'
+import { bindBrowserNotificationAdmission, trackBrowserNotificationTurn } from '@/lib/browser-notification-turns'
 import {
   branchGroupForUser,
   type ChatMessage,
@@ -23,11 +24,13 @@ import {
   hasUnresolvedToolCall,
   textPart
 } from '@/lib/chat-messages'
+import { hostHas } from '@/lib/host-capabilities'
 import type { ConfirmRequest } from '@/store/confirm'
 
 import {
   appendText,
   isFailedUserTurn,
+  isPreAdmissionRefusal,
   isSessionBusyError,
   isVisibleUserMessage,
   visibleUserIndexAtOrdinal,
@@ -49,6 +52,8 @@ type RequestGateway = <T = unknown>(method: string, params?: Record<string, unkn
 export type SurvivorUserRowIds = readonly (null | number)[] | Map<number, null | number>
 
 interface PromptSubmitResult {
+  admission_id?: string
+  submission_id?: string
   status?: string
   survivor_user_row_ids?: unknown
   survivor_row_id_map?: unknown
@@ -347,11 +352,14 @@ export async function runRewindSubmit(
   // Set once a backend rejected confirm_deep_truncate: the later sends of this submit (busy retries,
   // a resumed runtime) leave it out instead of paying a rejected round trip each.
   let deepConfirmUnsupported = false
+  let submissionIdentityUnsupported = false
+  const submissionId = hostHas('browserNotifications') ? randomUuid() : undefined
 
   const submitFor = async (targetId: string) => {
-    const params = {
+    let params: Record<string, unknown> = {
       session_id: targetId,
       text,
+      ...(submissionId && !submissionIdentityUnsupported ? { submission_id: submissionId } : {}),
       ...truncateSubmitParams(
         resolvedOrdinal,
         resolvedMessageId,
@@ -370,29 +378,35 @@ export async function runRewindSubmit(
       ...(rebindRowIds?.length ? { rebind_survivor_row_ids: [...new Set(rebindRowIds.filter(Number.isInteger))] } : {})
     }
 
-    try {
-      return await requestGateway<PromptSubmitResult>('prompt.submit', params, PROMPT_SUBMIT_REQUEST_TIMEOUT_MS)
-    } catch (error) {
-      // Desktop and backend can update independently. Backends predating #133716
-      // reject this one new field at contract admission (4000, handler never runs).
-      // The user already confirmed client-side, so retry once without only that
-      // field; never strip any other rejected param.
-      const message = error instanceof Error ? error.message : String(error)
+    while (true) {
+      try {
+        const receipt = await requestGateway<PromptSubmitResult>('prompt.submit', params, PROMPT_SUBMIT_REQUEST_TIMEOUT_MS)
 
-      const rejectedDeepConfirm =
-        error instanceof JsonRpcGatewayError &&
-        error.code === 4000 &&
-        'confirm_deep_truncate' in params &&
-        message.includes('invalid params for prompt.submit: confirm_deep_truncate:')
+        if (submissionId && params.submission_id && receipt?.submission_id === submissionId && receipt.admission_id) {
+          bindBrowserNotificationAdmission(submissionId, receipt.admission_id)
+        }
 
-      if (!rejectedDeepConfirm) {
-        throw error
+        return receipt
+      } catch (error) {
+        // Older gateways can refuse either field before admitting the turn.
+        // Drop only the named capability and keep the same rewind target.
+        if (
+          error instanceof JsonRpcGatewayError &&
+          error.code === 4000 &&
+          'confirm_deep_truncate' in params &&
+          error.message.includes('invalid params for prompt.submit: confirm_deep_truncate:')
+        ) {
+          deepConfirmUnsupported = true
+          const { confirm_deep_truncate: _unsupported, ...compatible } = params
+          params = compatible
+        } else if ('submission_id' in params && isPreAdmissionRefusal(error)) {
+          submissionIdentityUnsupported = true
+          const { submission_id: _unsupported, ...compatible } = params
+          params = compatible
+        } else {
+          throw error
+        }
       }
-
-      deepConfirmUnsupported = true
-      const { confirm_deep_truncate: _unsupported, ...compatible } = params
-
-      return requestGateway<PromptSubmitResult>('prompt.submit', compatible, PROMPT_SUBMIT_REQUEST_TIMEOUT_MS)
     }
   }
 
@@ -417,6 +431,12 @@ export async function runRewindSubmit(
 
   if (interruptFirst) {
     await interrupt()
+  }
+
+  // The canonical adapter used to assign this ID inside requestGateway. Register
+  // it once here so a completion racing the receipt can identify this page.
+  if (submissionId) {
+    trackBrowserNotificationTurn(submissionId)
   }
 
   try {

@@ -67,6 +67,7 @@ import {
   inlineErrorMessage,
   isAdmittedSubmissionConflict,
   isForwardedReceipt,
+  isPreAdmissionRefusal,
   isProviderSetupError,
   isSessionBusyError,
   isTargetSessionBusy,
@@ -202,17 +203,6 @@ type SubmitReceipt = Pick<PromptSubmitResult, 'forwarded' | 'user_row_id'> & {
   status?: string
   /** TUI-26: the owner ended the session's voice chat on a typed stop phrase and admitted nothing. */
   voice_stopped?: boolean
-}
-
-/** A refusal the backend issued before admitting anything, so an identityless retry cannot duplicate a turn. */
-function isPreAdmissionRefusal(error: unknown): boolean {
-  if (!error || typeof error !== 'object' || !('code' in error)) {
-    return false
-  }
-
-  const { code, message } = error as { code?: unknown; message?: unknown }
-
-  return code === 4094 || (code === 4000 && typeof message === 'string' && /submission_id/.test(message))
 }
 
 export function useSubmitPrompt(deps: SubmitPromptDeps) {

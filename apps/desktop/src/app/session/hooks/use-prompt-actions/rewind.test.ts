@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest'
 
 import { type ChatMessage, finalizeInterruptedMessages, textPart } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
+import * as host from '@/lib/host-capabilities'
 
 import {
   appendMidTurnUserMessage,
@@ -762,6 +763,29 @@ describe('runRewindSubmit durable-address discipline (#87059)', () => {
       )
     ).rejects.toBe(failure)
     expect(request).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps a single Webapp submission identity until the legacy peer explicitly refuses it', async () => {
+    const browser = vi.spyOn(host, 'hostHas').mockImplementation(capability => capability === 'browserNotifications')
+
+    const request = vi.fn()
+      .mockRejectedValueOnce(new JsonRpcGatewayError(DEEP_CONFIRM_REJECTED, { code: 4000 }))
+      .mockRejectedValueOnce(new JsonRpcGatewayError('invalid params for prompt.submit: submission_id: unknown field', { code: 4000 }))
+      .mockResolvedValueOnce({ status: 'streaming' })
+
+    try {
+      await runRewindSubmit(request, 'sid', 'Edited question', 1, undefined, false, undefined, 13, undefined, undefined, true)
+    } finally {
+      browser.mockRestore()
+    }
+
+    expect(request).toHaveBeenCalledTimes(3)
+    const [first, second, third] = request.mock.calls.map(([, params]) => params)
+    expect(first).toMatchObject({ submission_id: expect.any(String), confirm_deep_truncate: true })
+    expect(second.submission_id).toBe(first.submission_id)
+    expect(second).not.toHaveProperty('confirm_deep_truncate')
+    expect(third).toMatchObject({ truncate_before_row_id: 13, confirm_truncate: true })
+    expect(third).not.toHaveProperty('submission_id')
   })
 
   it('a busy retry after the fallback leaves the rejected field out', async () => {

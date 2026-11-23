@@ -1,13 +1,12 @@
-import { type GatewayEvent, JsonRpcGatewayClient } from '@hermes/shared'
+import type { GatewayEvent } from '@hermes/shared'
 import { QueryClient } from '@tanstack/react-query'
 import { act, cleanup, renderHook } from '@testing-library/react'
 import { useRef } from 'react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
-import { CanonicalDesktopProtocol } from '@/api/canonical-protocol'
-import type { HermesGateway } from '@/api/client'
+import { HermesGateway } from '@/api/client'
+import { createSessionRpcDispatcher } from '@/app/contrib/session-rpc-dispatcher'
 import { getLatestSessionMessages } from '@/hermes'
-import { en } from '@/i18n/en'
 import { resetInFlightTurnJournalStateForTests } from '@/lib/inflight-turn-journal'
 import { reportPrimaryGatewayState, setPrimaryGateway } from '@/store/gateway'
 import { __resetNativeNotifyBaselineForTests, withinNativeNotifyBaseline } from '@/store/notify-baseline'
@@ -29,8 +28,7 @@ import { makeSessionInfo } from '@/test/session-info'
 import type { SessionMessage } from '@/types/hermes'
 
 import { useMessageStream } from './use-message-stream'
-import { useSubmitPrompt } from './use-prompt-actions/submit'
-import type { GatewayRequest } from './use-prompt-actions/utils'
+import { usePromptActions } from './use-prompt-actions'
 import { useSessionActions } from './use-session-actions'
 import { useSessionStateCache } from './use-session-state-cache'
 
@@ -70,6 +68,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup()
+
   setPrimaryGateway(null)
   delete window.document.documentElement.dataset.hermesDesktopHost
   vi.unstubAllGlobals()
@@ -78,11 +77,24 @@ afterEach(() => {
 })
 
 class Socket extends EventTarget {
+  static OPEN = 1
+  static sockets: Socket[] = []
+  static respond: (request: Socket['sent'][number]) => unknown
   readyState = 0
   sent: { id: string; method: string; params: Record<string, unknown> }[] = []
 
+  constructor() {
+    super()
+    Socket.sockets.push(this)
+  }
+
   send(data: string) {
-    this.sent.push(JSON.parse(data))
+    const request = JSON.parse(data) as Socket['sent'][number]
+    this.sent.push(request)
+
+    if (request.method !== 'session.events.since' && request.id) {
+      queueMicrotask(() => this.frame({ jsonrpc: '2.0', id: request.id, result: Socket.respond(request) }))
+    }
   }
 
   close() {
@@ -112,6 +124,7 @@ interface Scenario {
   origin?: 'observer'
   foreground?: boolean
   interrupted?: boolean
+  rewind?: 'regenerate' | 'edit'
   expected: number
 }
 
@@ -144,7 +157,9 @@ const scenarios: Scenario[] = [
     expected: 0
   },
   { name: 'foreground existing chat', chat: 'warm', replay: 'pending', foreground: true, expected: 0 },
-  { name: 'interrupted turn during replay', chat: 'warm', replay: 'pending', interrupted: true, expected: 0 }
+  { name: 'interrupted turn during replay', chat: 'warm', replay: 'pending', interrupted: true, expected: 0 },
+  { name: 'regenerate', chat: 'cold', rewind: 'regenerate', expected: 1 },
+  { name: 'edit and resubmit', chat: 'cold', rewind: 'edit', expected: 1 }
 ]
 
 it.each(scenarios)('dispatches $expected response-ready alerts for $name', async scenario => {
@@ -161,33 +176,43 @@ it.each(scenarios)('dispatches $expected response-ready alerts for $name', async
       ]
 
   if (!isNew) {
-    setSessions([makeSessionInfo({ id: sessionId, source: 'local', message_count: messages.length, is_active: true })])
+    setSessions([
+      makeSessionInfo({ id: sessionId,  profile: 'default', source: 'local',
+        message_count: messages.length, is_active: true })
+    ])
   }
 
   vi.spyOn(window.document, 'hidden', 'get').mockReturnValue(!scenario.foreground)
   vi.spyOn(window.document, 'hasFocus').mockReturnValue(Boolean(scenario.foreground))
   vi.mocked(getLatestSessionMessages).mockResolvedValue({ session_id: sessionId, messages })
 
-  const adapter = new CanonicalDesktopProtocol()
   const queryClient = new QueryClient()
   const submission: { params?: Record<string, unknown> } = {}
   let route: string | null = isNew ? null : sessionId
 
-  const requestGateway = vi.fn(async (method: string, params: Record<string, unknown> = {}) => {
-    adapter.prepare(method, params)
+  const client = new HermesGateway()
+  Socket.sockets = []
+  vi.stubGlobal('WebSocket', Socket)
+
+  Socket.respond = ({ method, params }) => {
+    if (method === 'session.mutate' && params.operation === 'rewind') {
+      return { session_id: sessionId, revision: 2, status: 'applied' }
+    }
 
     if (method === 'prompt.submit') {
       submission.params = params
 
-      return adapter.result(method, params, {
+      return {
         ref: { session_id: sessionId },
         admission_id: admissionId,
+        submission_id: params.submission_id,
         status: 'queued'
-      })
+      }
     }
 
-    if (['session.resume', 'session.activate', 'session.create'].includes(method)) {
-      return adapter.result(method, params, {
+    if (['session.resume', 'session.create'].includes(method)) {
+      return {
+        ref: { session_id: sessionId },
         session_id: sessionId,
         stored_session_id: sessionId,
         resumed: sessionId,
@@ -196,12 +221,12 @@ it.each(scenarios)('dispatches $expected response-ready alerts for $name', async
         running: false,
         revision: 1,
         execution_generation: 1,
-        info: { stored_session_id: sessionId }
-      })
+        info: { stored_session_id: sessionId, profile_name: 'default' }
+      }
     }
 
     return {}
-  }) as GatewayRequest
+  }
 
   const hook = renderHook(() => {
     const busyRef = useRef(false)
@@ -214,6 +239,11 @@ it.each(scenarios)('dispatches $expected response-ready alerts for $name', async
       setMessages,
       setBusy,
       setAwaitingResponse
+    })
+
+    const requestGateway = createSessionRpcDispatcher({
+      ...cache,
+      ambientRequest: (...args) => client.request(...args)
     })
 
     const getRouteToken = () => route ?? 'new'
@@ -242,36 +272,28 @@ it.each(scenarios)('dispatches $expected response-ready alerts for $name', async
       refreshSessions: noop
     })
 
-    const submit = useSubmitPrompt({
+    const prompts = usePromptActions({
       ...cache,
+      activeSessionId: null,
+      branchCurrentSession: async () => false,
       busyRef,
-      copy: en.desktop,
       createBackendSessionForSend: actions.createBackendSessionForSend,
       getRouteToken,
       getRoutedStoredSessionId,
       getRuntimeIdForStoredSession: id => cache.runtimeIdByStoredSessionIdRef.current.get(id) ?? null,
+      handleSkinCommand: () => '',
+      openMemoryGraph: () => undefined,
+      refreshSessions: noop,
       resumeStoredSession: actions.resumeSession,
       requestGateway,
-      syncAttachmentsForSubmit: async (sessionId, attachments) => ({ sessionId, attachments })
+      startFreshSessionDraft: () => undefined,
+      sttEnabled: false
     })
 
-    return { cache, actions, stream, submit }
+    return { cache, actions, stream, prompts }
   })
 
-  const sockets: Socket[] = []
-
-  const client = new JsonRpcGatewayClient({
-    heartbeatIntervalMs: 0,
-    heartbeatDeadlineMs: 0,
-    socketFactory: () => {
-      const socket = new Socket()
-      sockets.push(socket)
-
-      return socket as unknown as WebSocket
-    }
-  })
-
-  setPrimaryGateway(client as unknown as HermesGateway)
+  setPrimaryGateway(client)
   const observed: GatewayEvent[] = []
   client.onState(reportPrimaryGatewayState)
   client.onEvent(event => {
@@ -281,8 +303,9 @@ it.each(scenarios)('dispatches $expected response-ready alerts for $name', async
 
   const connect = async () => {
     const connected = client.connect('ws://fixture.test')
-    const socket = sockets.at(-1)!
+    const socket = Socket.sockets.at(-1)!
     socket.open()
+    socket.event({ type: 'gateway.ready', payload: { session_authority: true } })
     await connected
 
     return socket
@@ -303,9 +326,11 @@ it.each(scenarios)('dispatches $expected response-ready alerts for $name', async
       act(() => socket.event({ session_id: replaySession, type: 'session.info', seq: 1, payload: { running: false } }))
       client.invalidate()
       socket = await connect()
-      expect(socket.sent.find(request => request.method === 'session.events.since')?.params).toMatchObject({
-        session_id: replaySession,
-        last_seen: 1
+      await vi.waitFor(() => {
+        expect(socket.sent.find(request => request.method === 'session.events.since')?.params).toMatchObject({
+          session_id: replaySession,
+          last_seen: 1
+        })
       })
 
       if (!isNew) {
@@ -335,9 +360,35 @@ it.each(scenarios)('dispatches $expected response-ready alerts for $name', async
 
     expect(withinNativeNotifyBaseline()).toBe(Boolean(scenario.quiet))
 
-    if (scenario.origin !== 'observer') {
+    if (scenario.rewind) {
+      const user = hook.result.current.cache.sessionStateByRuntimeIdRef.current.get(sessionId)?.messages.find(
+        message => message.role === 'user'
+      )
+
+      expect(user?.rowId).toBe(1)
       await act(async () => {
-        expect(await hook.result.current.submit('Example question')).toBe(true)
+        if (scenario.rewind === 'regenerate') {
+          await hook.result.current.prompts.reloadFromMessage(user!.id)
+        } else {
+          await hook.result.current.prompts.editMessage({
+            content: [{ type: 'text', text: 'Edited question' }],
+            parentId: null,
+            role: 'user',
+            sourceId: user!.id
+          })
+        }
+      })
+      const rewind = socket.sent.find(request => request.method === 'session.mutate')
+      expect(rewind?.params).toMatchObject({ operation: 'rewind', payload: { target_message_id: 1 } })
+      expect(submission.params).toMatchObject({
+        session_id: sessionId,
+        text: scenario.rewind === 'regenerate' ? 'Earlier question' : 'Edited question',
+        submission_id: expect.any(String)
+      })
+      expect(submission.params).not.toHaveProperty('truncate_before_row_id')
+    } else if (scenario.origin !== 'observer') {
+      await act(async () => {
+        expect(await hook.result.current.prompts.submitText('Example question')).toBe(true)
       })
       expect(submission.params?.session_id).toBe(sessionId)
       expect(typeof submission.params?.submission_id).toBe('string')
@@ -354,7 +405,10 @@ it.each(scenarios)('dispatches $expected response-ready alerts for $name', async
       outcome: scenario.interrupted ? 'cancelled' : 'completed',
       text: 'Example answer',
       persisted_turn: {
-        submission_id: String(submission.params?.submission_id ?? 'example-other-client-turn'),
+        // Exercise the bound-admission fallback for an edit completion without a submission ID.
+        ...(scenario.rewind === 'edit'
+          ? {}
+          : { submission_id: String(submission.params?.submission_id ?? 'example-other-client-turn') }),
         complete: true,
         row_ids: []
       }
@@ -365,6 +419,10 @@ it.each(scenarios)('dispatches $expected response-ready alerts for $name', async
     act(() => {
       socket.event({ ...stamp, type: 'message.start', seq: 3, payload: {} })
       socket.event(completion)
+
+      if (scenario.replay === 'pending' && !isNew) {
+        socket.event(completion)
+      }
     })
 
     if (scenario.replay === 'pending') {
@@ -412,6 +470,7 @@ it.each(scenarios)('dispatches $expected response-ready alerts for $name', async
       expect(observed.some(event => event.seq === 5)).toBe(true)
       expect(notify).toHaveBeenCalledOnce()
     }
+
   } finally {
     client.close()
   }

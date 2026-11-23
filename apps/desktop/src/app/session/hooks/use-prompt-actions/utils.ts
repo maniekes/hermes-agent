@@ -305,6 +305,17 @@ export function isCompressionBusyError(error: unknown): boolean {
   return data?.reason === 'session_busy' && data.field === 'compression'
 }
 
+/** A refusal the backend issued before admitting anything, so an identityless retry cannot duplicate a turn. */
+export function isPreAdmissionRefusal(error: unknown): boolean {
+  if (!error || typeof error !== 'object' || !('code' in error)) {
+    return false
+  }
+
+  const { code, message } = error as { code?: unknown; message?: unknown }
+
+  return code === 4094 || (code === 4000 && typeof message === 'string' && /submission_id/.test(message))
+}
+
 /** prompt.submit refused because this principal's submission id on this session is ALREADY admitted
  *  with another payload (hermes_state_runtime.ADMITTED_REQUEST_CONFLICT): the send was delivered.
  *  Every other `admission_conflict` (route, binding, lineage) names no such field and stays an error. */
