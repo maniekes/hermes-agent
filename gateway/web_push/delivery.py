@@ -233,6 +233,12 @@ class WebPush:
         row = self.active(authority, device, owner, login)
         return row is not None and hmac.compare_digest(row["material"], material)
 
+    def set_preview(self, authority, device, owner, login, preview):
+        row = self.active(authority, device, owner, login)
+        if row is None:
+            return None
+        return authority.db._execute_write(lambda conn: store.set_preview(conn, row, preview))
+
     def binding(self, authority, device, owner, login):
         row = self.active(authority, device, owner, login)
         if row is None:
@@ -253,12 +259,15 @@ class WebPush:
         with self._dispatch:
             return self._dispatch.wait_for(lambda: self._sending != device, timeout=7)
 
-    def _send(self, profile, row, remaining, subscription):
+    def _send(self, profile, row, remaining, subscription, preview):
         from pywebpush import WebPushException
 
         host, _ = endpoint_route(subscription["endpoint"])
-        payload = json.dumps({"kind": "turn" if row["session_id"] is not None else "test",
-                              "id": row["id"], "session": row["session_id"], "profile": profile})
+        value = {"kind": "turn" if row["session_id"] is not None else "test",
+                 "id": row["id"], "session": row["session_id"], "profile": profile}
+        if preview is not None:
+            value["preview"] = preview
+        payload = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
         try:
             response = self.send(subscription, data=payload, vapid_private_key=self.signer,
                                  vapid_claims={"aud": f"https://{host}", "sub": self.contact},
@@ -295,12 +304,26 @@ class WebPush:
         subscription = self._open(authority, row)
         if subscription is None:
             return
-        with authority.db._read_ctx() as conn:
-            if not store.still_current(conn, row):
-                return
         try:
+            with authority.db._read_ctx() as conn:
+                allowed = store.dispatch_preview(conn, row)
+                if allowed is None:
+                    return
+                source = store.preview_source(conn, row) if allowed and row["session_id"] else None
+            preview = None
+            if source is not None:
+                from gateway.web_push.preview import make_preview
+
+                preview = make_preview(source["title"], source["answer"])
+                # Formatting may take time. An opt-out during formatting must win.
+                with authority.db._read_ctx() as conn:
+                    allowed = store.dispatch_preview(conn, row)
+                if allowed is None:
+                    return
+                if not allowed:
+                    preview = None
             remaining = int(row["expires_at"] - time.time())
-            status, retry = self._send(profile, row, remaining, subscription) if remaining > 0 else (400, None)
+            status, retry = self._send(profile, row, remaining, subscription, preview) if remaining > 0 else (400, None)
         except OSError:
             status, retry = None, None
         except Exception:

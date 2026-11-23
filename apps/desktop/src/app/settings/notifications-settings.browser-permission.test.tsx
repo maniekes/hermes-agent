@@ -4,7 +4,7 @@ import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { MemoryRouter } from 'react-router'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
-import { browserPushStatus, disableBrowserPush, enableBrowserPush, testBrowserPush } from '@/lib/browser-web-push'
+import { browserPushStatus, disableBrowserPush, enableBrowserPush, setBrowserPushPreview, testBrowserPush } from '@/lib/browser-web-push'
 import { sendTestNativeNotification, setNativeNotifyEnabled, setNativeNotifyKind } from '@/store/native-notifications'
 import { notify } from '@/store/notifications'
 
@@ -14,6 +14,7 @@ vi.mock('@/lib/browser-web-push', () => ({
   browserPushStatus: vi.fn(),
   disableBrowserPush: vi.fn(),
   enableBrowserPush: vi.fn(),
+  setBrowserPushPreview: vi.fn(),
   testBrowserPush: vi.fn()
 }))
 vi.mock('@/lib/host-capabilities', () => ({ hostHas: (name: string) => name === 'browserNotifications' }))
@@ -217,5 +218,23 @@ it('does not silently accept a profile opt-out when an existing feature returns 
   renderAlerts()
   await act(async () => { fireEvent.click(screen.getByRole('switch', { name: 'Response ready' })) })
   expect(setNativeNotifyKind).not.toHaveBeenCalled()
+  expect(notify).toHaveBeenLastCalledWith({ kind: 'error', message: expect.stringMatching(/could not be saved/i) })
+})
+
+it('shows only server-confirmed preview consent and preserves it on a failed update', async () => {
+  vi.mocked(browserPushStatus).mockResolvedValue({ active: true, available: true, preview: false })
+  let confirm!: (value: boolean) => void
+  vi.mocked(setBrowserPushPreview).mockReturnValueOnce(new Promise(resolve => { confirm = resolve }))
+  renderAlerts()
+  const privacy = await screen.findByRole('switch', { name: 'Show message previews' })
+  expect(privacy.getAttribute('aria-checked')).toBe('false')
+  fireEvent.click(privacy)
+  expect(setBrowserPushPreview).toHaveBeenCalledWith(null, true)
+  expect(privacy.getAttribute('aria-checked')).toBe('false')
+  await act(async () => confirm(true))
+  expect(privacy.getAttribute('aria-checked')).toBe('true')
+  vi.mocked(setBrowserPushPreview).mockRejectedValueOnce(new Error('unavailable'))
+  await act(async () => { fireEvent.click(privacy) })
+  expect(privacy.getAttribute('aria-checked')).toBe('true')
   expect(notify).toHaveBeenLastCalledWith({ kind: 'error', message: expect.stringMatching(/could not be saved/i) })
 })

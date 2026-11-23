@@ -7,6 +7,7 @@ export interface WebPushStatus {
   available: boolean
   legacyBackend?: boolean
   publicKey?: string
+  preview?: boolean
   needsRepair?: boolean
 }
 
@@ -131,6 +132,16 @@ export async function testBrowserPush(profile: null | string) {
 
     throw error
   }
+}
+
+export async function setBrowserPushPreview(profile: null | string, preview: boolean) {
+  const answer = await request<{ preview: boolean }>(profile, 'privacy', { preview })
+
+  if (typeof answer?.preview !== 'boolean') {
+    throw new Error('Web Push privacy choice could not be read back')
+  }
+
+  return answer.preview
 }
 
 export function acknowledgeBrowserPush(admissionId: string, profile?: string) {

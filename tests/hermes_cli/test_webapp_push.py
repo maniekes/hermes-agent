@@ -55,7 +55,7 @@ def test_profile_scoped_cookie_routes_and_ticket(gated, monkeypatch, tmp_path, c
         assert browser.post(PATH + "/subscribe", headers=_headers(DESKTOP), json=endpoint).status_code == 409
         assert browser.get(PATH + "?profile=other", headers=_headers(PHONE)).json()["active"] is False
         assert browser.get(PATH, headers=_headers(PHONE)).json() == {
-            "active": True, "available": True, "publicKey": push.public_key}
+            "active": True, "available": True, "preview": False, "publicKey": push.public_key}
         other_login = gated.browser()
         _sign_in_with_oauth(other_login)
         assert other_login.get(PATH, headers=_headers(PHONE)).json()["active"] is False

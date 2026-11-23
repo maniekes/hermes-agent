@@ -434,3 +434,115 @@ def test_logout_and_retry_finish_while_existing_send_is_in_flight(fixture, gated
     replay.cookies.update(old_cookies)
     assert logout(replay).status_code == 302
     assert browser.get(PATH, headers=_headers(PHONE)).json()["active"] is True
+
+
+def _preview_turn(fixture, monkeypatch, answer, *, title=None, profile="beta", request_id="preview-turn"):
+    from hermes_state_runtime import claim_session_input, settle_session_input
+
+    browser = fixture.browser
+    authority = getattr(fixture, profile)
+    monkeypatch.setattr(authority, "_schedule_admitted", lambda *_: None)
+    created = _socket_request(browser, PHONE, "session.create",
+                              {"request_id": request_id + "-create", "model": "gpt-4o-mini", "source": "gui"}, profile)
+    sid = created["session_id"]
+    if title is not None:
+        assert authority.db.set_session_title(sid, title)
+    receipt = _socket_request(browser, PHONE, "prompt.submit",
+                              {"session_id": sid, "submission_id": request_id, "text": "synthetic prompt"}, profile)
+    started = claim_session_input(authority.db, epoch=authority.epoch, session_id=sid)
+    settle_session_input(
+        authority.db, epoch=authority.epoch, admission_id=receipt["admission_id"],
+        generation=started["generation"], outcome="completed",
+        result={"result": {"final_response": answer, "messages": [
+            {"role": "assistant", "content": "synthetic private progress", "tool_calls": []},
+            {"role": "tool", "content": "synthetic private tool output"},
+            {"role": "assistant", "content": answer},
+        ]}},
+    )
+    _due_now(authority)
+    return sid, receipt["admission_id"]
+
+
+def test_preview_requires_explicit_scoped_consent_and_stays_generic_after_reenrollment(
+        fixture, gated, endpoint, monkeypatch):
+    browser, push = fixture.browser, fixture.runner.web_push
+    for profile in ("default", "beta"):
+        assert _enroll(browser, endpoint, profile=profile).status_code == 200
+    assert browser.get(PATH, headers=_headers(PHONE), params={"profile": "beta"}).json().get("preview") is False
+    sid, admission = _preview_turn(fixture, monkeypatch, "synthetic private answer", title="synthetic private title")
+    assert push.deliver_one(fixture.beta, "beta", generation())
+    assert fixture.sends[-1][1] == {"kind": "turn", "id": admission, "session": sid, "profile": "beta"}
+
+    assert _act(browser, "privacy", "beta", {"preview": 1}).status_code == 400
+    foreign = gated.browser()
+    _sign_in_with_oauth(foreign)
+    assert _act(foreign, "privacy", "beta", {"preview": True}).status_code == 409
+    assert browser.post(PATH + "/privacy", headers=_headers(DESKTOP),
+                        params={"profile": "beta"}, json={"preview": True}).status_code == 409
+    assert browser.post(PATH + "/privacy", headers=_headers(PHONE, "https://cross.example"),
+                        params={"profile": "beta"}, json={"preview": True}).status_code == 403
+    assert _act(browser, "privacy", "beta", {"preview": True}).json() == {"preview": True}
+    assert browser.get(PATH, headers=_headers(PHONE)).json()["preview"] is False
+    assert _enroll(browser, endpoint, profile="beta").status_code == 200
+    assert browser.get(PATH, headers=_headers(PHONE), params={"profile": "beta"}).json()["preview"] is True
+    assert browser.post("/auth/logout", headers=_headers(PHONE), follow_redirects=False).status_code == 302
+    assert _enroll(foreign, endpoint, profile="beta").status_code == 200
+    assert foreign.get(PATH, headers=_headers(PHONE), params={"profile": "beta"}).json()["preview"] is False
+
+
+def test_preview_reads_only_canonical_answer_and_retry_uses_current_privacy(fixture, endpoint, monkeypatch):
+    browser, push = fixture.browser, fixture.runner.web_push
+    assert _enroll(browser, endpoint, profile="beta").status_code == 200
+    assert _act(browser, "privacy", "beta", {"preview": True}).status_code == 200
+    sent = []
+
+    def send(_subscription, **kwargs):
+        sent.append(kwargs["data"])
+        return SimpleNamespace(status_code=503 if len(sent) == 1 else 201, headers={})
+
+    monkeypatch.setattr(push, "send", send)
+    title = "🧪" * 90
+    answer = ("<think>secret reasoning</think> **Gotowe** [czytaj](https://example.test/private) "
+              "![secret photo](file:///tmp/album.jpg) <img src='/tmp/another.jpg'>\n\n"
+              "~~~python\nsynthetic_code()\n~~~\n\nMEDIA:/tmp/attachment.png\n\n" + "🧪" * 300)
+    sid, admission = _preview_turn(fixture, monkeypatch, answer, title=title)
+    assert push.deliver_one(fixture.beta, "beta", generation())
+    payload = json.loads(sent[0])
+    assert payload["preview"]["title"] == title[:79] + "…"
+    assert payload["preview"]["body"] == ("Gotowe czytaj " + "🧪" * 300)[:239] + "…"
+    assert len(sent[0].encode("utf-8")) < 2000
+    assert _act(browser, "privacy", "beta", {"preview": False}).json() == {"preview": False}
+    _due_now(fixture.beta)
+    assert push.deliver_one(fixture.beta, "beta", generation())
+    assert json.loads(sent[1]) == {"kind": "turn", "id": admission, "session": sid, "profile": "beta"}
+
+
+@pytest.mark.parametrize(("answer", "preview"), [
+    ("Wynik", {"body": "Wynik"}),
+    ("Wynik ~~stary~~ <think>hidden <think>nested</think> still hidden</think>", {"body": "Wynik stary"}),
+    ("Wynik <reasoning>unterminated private section", {"body": "Wynik"}),
+    ("   ", None),
+])
+def test_preview_handles_missing_title_or_empty_canonical_answer(fixture, endpoint, monkeypatch, answer, preview):
+    browser = fixture.browser
+    assert _enroll(browser, endpoint, profile="beta").status_code == 200
+    assert _act(browser, "privacy", "beta", {"preview": True}).status_code == 200
+    _preview_turn(fixture, monkeypatch, answer)
+    assert fixture.runner.web_push.deliver_one(fixture.beta, "beta", generation())
+    assert fixture.sends[-1][1].get("preview") == preview
+
+
+def test_existing_enrollment_migrates_private_and_generic_cancels_queued_preview(fixture, endpoint, monkeypatch):
+    browser, push = fixture.browser, fixture.runner.web_push
+    assert _enroll(browser, endpoint, profile="beta").status_code == 200
+    authority = fixture.beta
+    authority.db._execute_write(lambda conn: conn.execute("ALTER TABLE web_push_subscriptions DROP COLUMN preview"))
+    with SessionDB(authority.db.db_path):
+        pass
+    status = browser.get(PATH, headers=_headers(PHONE), params={"profile": "beta"})
+    assert status.json()["active"] is True and status.json()["preview"] is False
+    assert _act(browser, "privacy", "beta", {"preview": True}).status_code == 200
+    _preview_turn(fixture, monkeypatch, "synthetic queued answer", title="synthetic queued title")
+    assert _act(browser, "privacy", "beta", {"preview": False}).status_code == 200
+    assert push.deliver_one(authority, "beta", generation())
+    assert "preview" not in fixture.sends[-1][1]

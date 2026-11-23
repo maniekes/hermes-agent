@@ -100,8 +100,12 @@ self.addEventListener('push', event => {
     typeof payload.session === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(payload.session) &&
     typeof payload.profile === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(payload.profile)
 
-  event.waitUntil(self.registration.showNotification('Hermes', {
-    body: payload?.kind === 'test' ? 'Test notification' : 'Response ready',
+  const preview = hasTarget && id && validPreview(payload.preview) ? payload.preview : null
+  const polish = /^pl(?:-|$)/i.test(self.navigator?.language ?? '')
+  const generic = polish ? 'Odpowiedź gotowa' : 'Response ready'
+
+  event.waitUntil(self.registration.showNotification(preview?.title ?? 'Hermes', {
+    body: payload?.kind === 'test' ? 'Test notification' : preview?.body ?? generic,
     data: {
       push: true,
       ...(hasTarget ? { pushSession: payload.session, pushProfile: payload.profile } : {})
@@ -110,3 +114,11 @@ self.addEventListener('push', event => {
     tag: id ? `hermes:push:${id}` : 'hermes:push'
   }))
 })
+
+function validPreview(preview) {
+  const validText = (text, limit) => typeof text === 'string' && text.trim() && text.length <= 2 * limit &&
+    [...text].length <= limit && !/\p{Cc}|<\/?[a-z][^>]*>/iu.test(text)
+
+  return preview && validText(preview.body, 240) &&
+    (preview.title === undefined || validText(preview.title, 80))
+}

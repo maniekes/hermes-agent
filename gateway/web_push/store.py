@@ -28,7 +28,8 @@ CREATE TABLE IF NOT EXISTS web_push_subscriptions (
     sealed BLOB NOT NULL,
     updated_at REAL NOT NULL,
     grant INTEGER NOT NULL DEFAULT 0,
-    profile_grant INTEGER NOT NULL DEFAULT 0
+    profile_grant INTEGER NOT NULL DEFAULT 0,
+    preview INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS web_push_outbox (
     id TEXT PRIMARY KEY,
@@ -102,6 +103,13 @@ def subscription(conn, device, owner, login, vapid, grant=0):
         """SELECT * FROM web_push_subscriptions
            WHERE device=? AND owner=? AND login=? AND vapid=? AND grant=?""",
         (device, owner, login, vapid, grant)).fetchone()
+
+
+def set_preview(conn, row, preview):
+    saved = conn.execute("""UPDATE web_push_subscriptions SET preview=?
+                            WHERE device=? AND version=? RETURNING preview""",
+                         (preview, row["device"], row["version"])).fetchone()
+    return bool(saved["preview"]) if saved is not None else None
 
 
 def subscribe(conn, device, owner, login, vapid, endpoint, sealed, now, *, material='', grant=0, profile_grant=0):
@@ -225,9 +233,22 @@ def prune(conn, now):
                AND a.status IN ('queued','started','unknown')))""", (now,))
 
 
-def still_current(conn, row):
-    return conn.execute(
-        """SELECT 1 FROM web_push_outbox q JOIN web_push_subscriptions s
+def dispatch_preview(conn, row):
+    current = conn.execute(
+        """SELECT s.preview FROM web_push_outbox q JOIN web_push_subscriptions s
            ON q.device=s.device AND q.version=s.version
            WHERE q.id=? AND q.version=? AND q.due_at IS NOT NULL""",
-        (row["id"], row["version"])).fetchone() is not None
+        (row["id"], row["version"])).fetchone()
+    return bool(current["preview"]) if current is not None else None
+
+
+def preview_source(conn, row):
+    from hermes_state_terminal import RESULT_PREFIX
+
+    # Read only the exact settlement's final response. Never fall back to recent messages.
+    return conn.execute(
+        """SELECT substr(s.title, 1, 4096) AS title,
+                  substr(json_extract(r.value, '$.result.final_response'), 1, 16384) AS answer
+           FROM sessions s JOIN state_meta r ON r.key=?
+           WHERE s.id=? AND CASE WHEN json_valid(r.value) THEN json_type(r.value, '$.result.final_response') END='text'""",
+        (RESULT_PREFIX + row["id"], row["session_id"])).fetchone()

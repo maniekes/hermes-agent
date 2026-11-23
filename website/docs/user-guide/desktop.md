@@ -174,8 +174,12 @@ keep their existing behavior. Saved remote gateways continue using their existin
 If the sender's browser receives a successful completion while its conversation is focused, it can
 acknowledge it during a short grace period to avoid an OS alert. Locking or closing the app around
 completion may race this check. Chrome displays each received Push using the device's sound settings.
-The alert has generic text and
-opens the conversation after sign-in if necessary. Delivery is best effort and an alert already
+The alert opens the conversation after sign-in if necessary. By default it shows a generic message
+and leaves out the conversation title. **Show message previews** opts this Chrome installation and
+profile into showing a short title and part of the final reply on the lock screen. The choice belongs
+to the current enrollment and starts off again if it needs to be replaced. Turning previews off also
+applies to queued deliveries and retries. An alert already dispatched may still show its preview.
+Delivery is best effort and an alert already
 accepted by the push provider may still appear after disabling. Turning off **Response ready**
 revokes this profile. Turning off **Enable notifications** revokes this installation across the
 serving gateway, including profiles that are temporarily unavailable, and unsubscribes in the browser.

@@ -54,6 +54,8 @@ export const enNotifications = {
     repair: 'Repair',
     setup: 'Set up Web Push for the current profile. Other notification kinds keep their existing behavior.',
     active: 'Web Push is active for this profile. Hermes tries to skip the alert when you are reading the completed response.',
+    preview: 'Show message previews',
+    previewDescription: 'Include the conversation title and part of the final reply on this device’s lock screen. Off shows a generic alert.',
     unavailable: 'Web Push status is unavailable. Reload Hermes or try again.',
     failed: 'Web Push settings could not be saved. Try again.',
     queued: 'Push test queued. Check this device for the notification.',

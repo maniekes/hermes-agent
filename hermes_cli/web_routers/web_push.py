@@ -123,7 +123,8 @@ async def push_status(request: Request, profile: str | None = None):
         return _response(available=False, active=False)
 
     active = await run_in_threadpool(push.active, authority, device, owner, login)
-    return _response(available=True, active=active is not None, publicKey=push.public_key)
+    return _response(available=True, active=active is not None, publicKey=push.public_key,
+                     **({"preview": bool(active["preview"])} if active is not None else {}))
 
 
 @router.post("/{action}")
@@ -153,6 +154,13 @@ async def push_action(request: Request, action: str, profile: str | None = None)
         return _response(applied=revoked_grant is not None)
     if authority is None or push is None:
         raise HTTPException(404, "Web Push is unavailable")
+    if action == "privacy":
+        if not isinstance(value, dict) or value.keys() != {"preview"} or type(value["preview"]) is not bool:
+            raise HTTPException(400, "Expected a Web Push privacy choice")
+        preview = await run_in_threadpool(push.set_preview, authority, device, owner, login, value["preview"])
+        if preview is None:
+            raise HTTPException(409, "Web Push subscription is inactive")
+        return _response(preview=preview)
     if action in {"subscribe", "check"}:
         try:
             operation = push.register if action == "subscribe" else push.matches

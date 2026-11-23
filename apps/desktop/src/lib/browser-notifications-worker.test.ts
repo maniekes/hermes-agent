@@ -7,7 +7,7 @@ import { describe, expect, it, vi } from 'vitest'
 
 const script = readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), '../../public/hermes-notifications-sw.js'), 'utf8')
 
-function worker() {
+function worker(language = 'en-US') {
   const callbacks = new Map<string, (event: unknown) => void>()
   const registration = { scope: 'https://hermes.example/webapp/hermes-notifications/', showNotification: vi.fn() }
   const clients = { get: vi.fn(), openWindow: vi.fn() }
@@ -15,6 +15,7 @@ function worker() {
   const self = {
     addEventListener: (type: string, callback: (event: unknown) => void) => callbacks.set(type, callback),
     clients,
+    navigator: { language },
     registration
   }
 
@@ -139,4 +140,30 @@ describe('notification service worker', () => {
     await send('notificationclick', { notification: { close: vi.fn(), data: options.data } })
     expect(clients.openWindow).toHaveBeenCalledWith('https://hermes.example/webapp/')
   })
+})
+
+it('displays a valid preview without putting private text in click data', async () => {
+  const { clients, registration, send } = worker('pl-PL')
+  const id = '2'.repeat(32)
+  await send('push', {
+    data: { json: () => ({ id, kind: 'turn', preview: { body: 'Podsumowanie 🧪', title: 'Tytuł' }, profile: 'work', session: 'old-chat' }) }
+  })
+  const [title, options] = registration.showNotification.mock.calls[0]
+  expect(title).toBe('Tytuł')
+  expect(options).toMatchObject({ body: 'Podsumowanie 🧪', data: { push: true, pushProfile: 'work', pushSession: 'old-chat' } })
+  expect(Object.keys(options.data)).toEqual(['push', 'pushSession', 'pushProfile'])
+  await send('notificationclick', { notification: { close: vi.fn(), data: options.data } })
+  expect(clients.openWindow).toHaveBeenCalledWith('https://hermes.example/webapp/?profile=work&pushSession=old-chat')
+})
+
+it.each([
+  { target: '../other', preview: { body: 'Private', title: 'Secret' } },
+  { target: 'chat', preview: { body: '🧪'.repeat(241), title: 'Secret' } },
+  { target: 'chat', preview: { body: '', title: 'Secret' } },
+  { target: 'chat', preview: { body: '<think>Private</think>' } },
+  { target: 'chat', preview: { body: 'Private', title: 42 } }
+])('uses a Polish generic notification for an invalid preview or target', async ({ target, preview }) => {
+  const { registration, send } = worker('pl-PL')
+  await send('push', { data: { json: () => ({ id: '3'.repeat(32), kind: 'turn', preview, profile: 'work', session: target }) } })
+  expect(registration.showNotification).toHaveBeenCalledWith('Hermes', expect.objectContaining({ body: 'Odpowiedź gotowa' }))
 })

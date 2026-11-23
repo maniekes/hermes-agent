@@ -21,6 +21,8 @@ export interface NotificationSettingsTranslations {
     repair: string
     setup: string
     active: string
+    preview?: string
+    previewDescription?: string
     unavailable: string
     failed: string
     queued: string

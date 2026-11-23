@@ -6,7 +6,7 @@ import { Button } from '@/components/ui/button'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { useI18n } from '@/i18n'
 import { enNotifications } from '@/i18n/en_notifications'
-import { browserPushStatus, disableBrowserPush, enableBrowserPush, testBrowserPush, type WebPushStatus } from '@/lib/browser-web-push'
+import { browserPushStatus, disableBrowserPush, enableBrowserPush, setBrowserPushPreview, testBrowserPush, type WebPushStatus } from '@/lib/browser-web-push'
 import { COMPLETION_SOUND_VARIANTS, previewCompletionSound } from '@/lib/completion-sound'
 import { triggerHaptic } from '@/lib/haptics'
 import { hostHas } from '@/lib/host-capabilities'
@@ -215,6 +215,27 @@ export function NotificationsSettings({ subpage }: NotificationsSettingsProps = 
     }
   }
 
+  const changePreview = async (preview: boolean) => {
+    const reads = pushReads.current
+    reads.version++
+    setPushBusy(true)
+
+    try {
+      const confirmed = await setBrowserPushPreview(profile, preview)
+
+      if (reads === pushReads.current) {
+        setPushState(previous => previous.scope === pushScope && previous.status?.active
+          ? { scope: pushScope, status: { ...previous.status, preview: confirmed } }
+          : previous)
+      }
+    } catch {
+      notify({ kind: 'error', message: pushCopy.failed })
+    } finally {
+      reads.version++
+      setPushBusy(false)
+    }
+  }
+
   const runTest = async () => {
     triggerHaptic('open')
 
@@ -329,6 +350,16 @@ export function NotificationsSettings({ subpage }: NotificationsSettingsProps = 
               description={pushError ? pushCopy.unavailable :
                 pushStatus?.active && !pushStatus.needsRepair ? pushCopy.active : pushCopy.setup}
               title={pushCopy.title}
+            />
+          )}
+
+          {pushStatus?.active && typeof pushStatus.preview === 'boolean' && (
+            <ToggleRow
+              checked={pushStatus.preview}
+              description={pushCopy.previewDescription ?? enNotifications.webPush.previewDescription}
+              disabled={pushBusy}
+              label={pushCopy.preview ?? enNotifications.webPush.preview}
+              onChange={preview => void changePreview(preview)}
             />
           )}
 
