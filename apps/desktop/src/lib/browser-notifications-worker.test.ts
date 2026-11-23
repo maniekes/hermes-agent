@@ -107,4 +107,36 @@ describe('notification service worker', () => {
 
     expect(reply.postMessage).toHaveBeenCalledWith({ error: 'NotAllowedError', ok: false })
   })
+
+  it('shows a generic push with an admission tag and opens the profile-aware login-safe URL', async () => {
+    const { clients, registration, send } = worker()
+    const id = '1'.repeat(32)
+
+    const pending = send('push', {
+      data: { json: () => ({ id, kind: 'turn', profile: 'work', session: 'old-chat', text: 'private text' }) }
+    })
+
+    await pending
+
+    expect(registration.showNotification).toHaveBeenCalledWith('Hermes', {
+      body: 'Response ready',
+      data: { push: true, pushProfile: 'work', pushSession: 'old-chat' },
+      renotify: false,
+      tag: `hermes:push:${id}`
+    })
+    await send('notificationclick', {
+      notification: { close: vi.fn(), data: registration.showNotification.mock.calls[0][1].data }
+    })
+    expect(clients.get).not.toHaveBeenCalled()
+    expect(clients.openWindow).toHaveBeenCalledWith('https://hermes.example/webapp/?profile=work&pushSession=old-chat')
+  })
+
+  it('keeps a malformed push visible while refusing its proposed target', async () => {
+    const { clients, registration, send } = worker()
+    await send('push', { data: { json: () => ({ id: 'bad', kind: 'turn', profile: 'work', session: '//elsewhere' }) } })
+    const options = registration.showNotification.mock.calls[0][1]
+    expect(options.data).toEqual({ push: true })
+    await send('notificationclick', { notification: { close: vi.fn(), data: options.data } })
+    expect(clients.openWindow).toHaveBeenCalledWith('https://hermes.example/webapp/')
+  })
 })

@@ -51,6 +51,12 @@ import { usePromptActions } from './use-prompt-actions'
 import { useSessionActions } from './use-session-actions'
 import { useSessionStateCache } from './use-session-state-cache'
 
+const { acknowledgeBrowserPush } = vi.hoisted(() => ({ acknowledgeBrowserPush: vi.fn() }))
+vi.mock('@/lib/browser-web-push', async original => ({
+  ...(await original<Record<string, unknown>>()),
+  acknowledgeBrowserPush
+}))
+
 vi.mock('@/hermes', async original => ({
   ...(await original<Record<string, unknown>>()),
   getLatestSessionMessages: vi.fn()
@@ -177,6 +183,7 @@ interface Scenario {
   tile?: boolean
   twoTurns?: boolean
   failed?: boolean
+  push?: boolean
   expected: number
 }
 
@@ -215,10 +222,16 @@ const scenarios: Scenario[] = [
   { name: 'focused chat tile with a different main session', chat: 'cold', tile: true, expected: 1 },
   { name: 'foreground chat tile', chat: 'cold', tile: true, foreground: true, expected: 0 },
   { name: 'two distinct local turns within one second', chat: 'cold', twoTurns: true, expected: 1 },
-  { name: 'failed local turn', chat: 'cold', failed: true, expected: 0 }
+  { name: 'failed local turn', chat: 'cold', failed: true, expected: 0 },
+  { name: 'new chat assigned to Web Push', chat: 'new', push: true, expected: 0 },
+  { name: 'existing chat assigned to Web Push during replay', chat: 'warm', replay: 'pending', push: true, expected: 0 },
+  { name: 'foreground chat assigned to Web Push', chat: 'cold', foreground: true, push: true, expected: 0 },
+  { name: 'regeneration assigned to Web Push', chat: 'cold', rewind: 'regenerate', push: true, expected: 0 },
+  { name: 'edit assigned to Web Push', chat: 'cold', rewind: 'edit', push: true, expected: 0 }
 ]
 
 it.each(scenarios)('dispatches $expected response-ready alerts for $name', async scenario => {
+  acknowledgeBrowserPush.mockClear()
   const isNew = scenario.chat === 'new'
   // The canonical gateway uses the stored ID as its runtime address.
   const sessionId = isNew ? 'example-new-chat' : 'example-existing-chat'
@@ -499,6 +512,7 @@ it.each(scenarios)('dispatches $expected response-ready alerts for $name', async
     const payload = {
       status,
       text: 'Example answer',
+      web_push: scenario.push,
       persisted_turn: {
         // Exercise the bound-admission fallback for an edit completion without a submission ID.
         ...(scenario.rewind === 'edit'
@@ -551,6 +565,11 @@ it.each(scenarios)('dispatches $expected response-ready alerts for $name', async
       scenario.replay === 'pending' && !isNew
     )
     expect(notify).toHaveBeenCalledTimes(scenario.expected)
+    if (scenario.push && scenario.foreground) {
+      expect(acknowledgeBrowserPush.mock.calls.map(([id]) => id)).toEqual([admissionId])
+    } else {
+      expect(acknowledgeBrowserPush).not.toHaveBeenCalled()
+    }
 
     if (scenario.twoTurns) {
       const firstSubmissionId = submission.params?.submission_id

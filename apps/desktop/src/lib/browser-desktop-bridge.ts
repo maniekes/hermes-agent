@@ -16,6 +16,7 @@ import { createBrowserTerminal } from '@/lib/browser-terminal'
 import { browserApi, type BrowserBootstrap, browserBootstrap, ticketedWebsocketUrl } from '@/lib/browser-transport'
 import { createBrowserUiPreferences } from '@/lib/browser-ui-preferences'
 import { createBrowserUploadsBridge } from '@/lib/browser-uploads'
+import { consumeBrowserPushLink } from '@/lib/browser-web-push'
 import { announceWebappWindow, createBrowserWindowOpener, sessionWindowTarget } from '@/lib/browser-window'
 import { createBrowserZoom } from '@/lib/browser-zoom'
 import { failDesktopBoot } from '@/store/boot'
@@ -49,6 +50,12 @@ export function installBrowserDesktopBridge(): boolean {
 
   if (!bootstrap) {
     return false
+  }
+
+  const pushLink = consumeBrowserPushLink(new URL(window.location.href))
+
+  if (pushLink) {
+    window.history.replaceState(window.history.state, '', pushLink)
   }
 
   // A gated host's opener waits for this window to say it booted (createBrowserWindowOpener).

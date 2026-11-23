@@ -1,9 +1,10 @@
-import { type BillingBlock, mergeUsage } from '@hermes/shared'
+import { type BillingBlock, LOCAL_CONNECTION_ID, mergeUsage } from '@hermes/shared'
 
 import { noteTurnSettled } from '@/app/session/hooks/use-session-actions/settled-turns'
 import { burstVibeHearts } from '@/components/chat/vibe-hearts'
 import { translateNow } from '@/i18n'
 import { takeBrowserNotificationTurn } from '@/lib/browser-notification-turns'
+import { acknowledgeBrowserPush } from '@/lib/browser-web-push'
 import { type GatewayEventPayload, markQueuedPromptStarted } from '@/lib/chat-messages'
 import { coerceGatewayText, coerceThinkingText } from '@/lib/chat-runtime'
 import { playCompletionSound } from '@/lib/completion-sound'
@@ -23,7 +24,7 @@ import { providerWaitText, setSessionProviderWait } from '@/store/provider-wait'
 import { setCurrentUsage, setTurnStartedAt } from '@/store/session'
 import { refreshSupportedSessionControlAfterTurn } from '@/store/session-control'
 import { $focusedStoredSessionId } from '@/store/session-focus'
-import { $sessionStates } from '@/store/session-states'
+import { $focusedRuntimeId, $sessionStates } from '@/store/session-states'
 import { lightDesktopMessagingCompletion } from '@/store/session-unread'
 import { pruneFinishedSessionSubagents } from '@/store/subagents'
 import { clearActiveSessionTodos } from '@/store/todos'
@@ -450,7 +451,14 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
 
     // Reconnect marks buffered live frames as replayed too. The pending submission
     // in this page establishes ownership and is consumed by the first terminal frame.
-    if (!browser || (ownTurnId && payload?.status === 'complete')) {
+    const usesPush = browser && payload?.web_push === true
+
+    if (usesPush && ownTurnId && event.admission_id && payload?.status === 'complete' &&
+      (!event.connectionId || event.connectionId === LOCAL_CONNECTION_ID) && ctx.fromActiveSource() && !document.hidden && document.hasFocus() && $focusedRuntimeId.get() === sessionId) {
+      acknowledgeBrowserPush(event.admission_id, event.profile)
+    }
+
+    if (!browser || (!usesPush && ownTurnId && payload?.status === 'complete')) {
       const notification = {
         body: turnDoneNotificationBody(finalText, translateNow('notifications.native.turnDoneBody')),
         sessionId,

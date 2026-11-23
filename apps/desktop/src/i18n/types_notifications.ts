@@ -15,6 +15,17 @@ export interface NotificationSettingsTranslations {
     requestFailed: string
     states: Record<'default' | 'denied' | 'granted' | 'insecure' | 'unsupported', string>
   }
+  webPush?: {
+    title: string
+    enable: string
+    repair: string
+    setup: string
+    active: string
+    unavailable: string
+    failed: string
+    queued: string
+    sound: string
+  }
   test: string
   testTitle: string
   testBody: string

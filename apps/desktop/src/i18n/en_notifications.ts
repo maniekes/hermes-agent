@@ -48,6 +48,17 @@ export const enNotifications = {
       unsupported: 'This browser cannot show notifications. The tab title still flashes.'
     }
   },
+  webPush: {
+    title: 'Response ready when Hermes is closed',
+    enable: 'Set up on this device',
+    repair: 'Repair',
+    setup: 'Set up Web Push for the current profile. Other notification kinds keep their existing behavior.',
+    active: 'Web Push is active for this profile. Hermes tries to skip the alert when you are reading the completed response.',
+    unavailable: 'Web Push status is unavailable. Reload Hermes or try again.',
+    failed: 'Web Push settings could not be saved. Try again.',
+    queued: 'Push test queued. Check this device for the notification.',
+    sound: 'Web Push sound follows this device’s notification settings.'
+  },
   test: 'Send test notification',
   testTitle: 'Hermes',
   testBody: 'Notifications are working.',

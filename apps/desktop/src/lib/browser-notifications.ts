@@ -81,8 +81,10 @@ interface BrowserNotificationContext {
   reopenProfile?: null | string
 }
 
-async function activeNotificationWorker(registration: ServiceWorkerRegistration): Promise<ServiceWorker> {
-  const worker = registration.active ?? registration.installing ?? registration.waiting
+async function activeNotificationWorker(registration: ServiceWorkerRegistration, updating = false): Promise<ServiceWorker> {
+  const worker = updating
+    ? registration.installing ?? registration.waiting ?? registration.active
+    : registration.active ?? registration.installing ?? registration.waiting
 
   if (!worker || worker.state === 'redundant') {
     throw new Error('Notification service worker is unavailable')
@@ -122,6 +124,23 @@ async function activeNotificationWorker(registration: ServiceWorkerRegistration)
   })
 }
 
+export async function notificationRegistration(serviceWorker: ServiceWorkerContainer, basePath: string) {
+  const root = new URL(`${basePath}/`, window.location.origin)
+  const script = new URL(WORKER_FILE, root).href
+  notificationWorkerUrl = script
+
+  // This scope leaves app navigation and other service workers alone.
+  return serviceWorker.register(script, { scope: new URL('hermes-notifications/', root).href })
+}
+
+export async function pushNotificationRegistration(basePath: string) {
+  const registration = await notificationRegistration(navigator.serviceWorker, basePath)
+  await registration.update()
+  await activeNotificationWorker(registration, true)
+
+  return registration
+}
+
 async function showWorkerNotification(
   serviceWorker: ServiceWorkerContainer,
   title: string,
@@ -130,16 +149,7 @@ async function showWorkerNotification(
   reopenSessionId: string | undefined,
   { basePath, reopenProfile }: BrowserNotificationContext
 ): Promise<boolean> {
-  const root = new URL(`${basePath}/`, window.location.origin)
-  const script = new URL(WORKER_FILE, root).href
-  notificationWorkerUrl = script
-
-  // Give the worker its own scope so it cannot take over the app's navigation
-  // or replace a registration for the installed app.
-  const registration = await serviceWorker.register(script, {
-    scope: new URL('hermes-notifications/', root).href
-  })
-
+  const registration = await notificationRegistration(serviceWorker, basePath)
   const worker = await activeNotificationWorker(registration)
 
   return new Promise((resolve, reject) => {

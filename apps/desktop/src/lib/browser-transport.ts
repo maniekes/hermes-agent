@@ -2,6 +2,7 @@ import { BROWSER_NATIVE_DIAL, buildHermesWebSocketUrl, normalizeBasePath } from 
 
 import type { HermesApiRequest } from '@/global'
 import { readWebappSession, webappSignInRequired } from '@/lib/browser-launch-session'
+import { PUSH_INSTALLATION_HEADER, pushInstallation } from '@/lib/browser-push-installation'
 import { type BrowserHostGlobals, hasBrowserHostBootstrap } from '@/lib/platform'
 
 export interface BrowserBootstrap {
@@ -206,8 +207,8 @@ export async function browserFetchBlob(
   return response.blob()
 }
 
-export async function browserApi<T>(bootstrap: BrowserBootstrap, request: HermesApiRequest): Promise<T> {
-  const headers = new Headers()
+export async function browserApi<T>(bootstrap: BrowserBootstrap, request: HermesApiRequest, extraHeaders?: HeadersInit): Promise<T> {
+  const headers = new Headers(extraHeaders)
   let body: BodyInit | undefined
 
   if (request.upload) {
@@ -319,12 +320,13 @@ export async function ticketedWebsocketUrl(
   profile?: null | string
 ): Promise<string> {
   const gateway = path === '/api/ws'
+  const installation = gateway && bootstrap.authRequired ? pushInstallation(bootstrap.basePath) : undefined
 
   const result = await browserApi<null | { ticket?: string }>(bootstrap, {
     method: 'POST',
     path: `/api/webapp/socket-ticket?socket=${TICKET_SOCKETS[path]}`,
     profile: gateway ? profile : undefined
-  })
+  }, installation ? { [PUSH_INSTALLATION_HEADER]: installation } : undefined)
 
   const ticket = String(result?.ticket || '').trim()
 

@@ -162,6 +162,43 @@ whenever a profile has it turned on.
 If that build fails, the gateway reports the Webapp unavailable, and the page says so, until
 `hermes webapp` rebuilds it.
 
+### Response-ready alerts when the Webapp is closed
+
+On a signed-in HTTPS Webapp, **Settings → Notifications → Response ready when Hermes is closed**
+can enroll the current profile on this Chrome installation. This uses the same browser permission as
+local alerts. Setup requires an explicit action. **Send test notification** queues a real Web Push
+to the same installation when enrolled. Only successful responses for prompts sent from that
+installation use this path. Desktop, approval, input, error, credit and plugin notifications
+keep their existing behavior. Saved remote gateways continue using their existing browser behavior.
+
+If the sender's browser receives a successful completion while its conversation is focused, it can
+acknowledge it during a short grace period to avoid an OS alert. Locking or closing the app around
+completion may race this check. Chrome displays each received Push using the device's sound settings.
+The alert has generic text and
+opens the conversation after sign-in if necessary. Delivery is best effort and an alert already
+accepted by the push provider may still appear after disabling. Turning off **Response ready**
+revokes this profile. Turning off **Enable notifications** revokes this installation on all currently
+served profiles and unsubscribes in the browser. A repair action is available when the browser
+registration or application key changes.
+
+To enable the backend, install the locked extra with `hermes pm install --extra web-push`, or
+build the Hermes image with `--build-arg HERMES_WEB_PUSH=1`. Use this backend together with its
+matching Webapp build. In the serving gateway's profile config set `webapp.web_push: true`.
+Keep a private file `webapp/web-push.json` under the **serving gateway's Hermes home**, owned by the
+gateway account with mode `0600`. Its fields are `vapid_private_key` (P-256 PEM private key),
+`storage_key` (32 random bytes encoded as unpadded base64url), and `contact` (a reachable
+`mailto:` contact for VAPID). Generate these once on the server and keep the file out of source
+control and ordinary logs. The gateway shares its VAPID key across profiles served on the same
+origin. Subscription data and pending delivery state are isolated in each profile's SQLite store.
+The backend sends outgoing TLS to Chrome's FCM Web Push endpoint. No Firebase project is required.
+
+Deploy with the same origin and keep VAPID and storage keys stable across restarts. Key rotation,
+origin changes, browser storage reset and global `hermes webapp --sign-out` require re-enrollment.
+An ordinary cookie expiry leaves enrollment in place so an alert can reopen through sign-in.
+For a shared device, turn off notifications before signing out. The new tables are additive.
+For rollback, turn off `webapp.web_push` and deploy the prior backend and matching Webapp.
+Disable browser enrollments before rolling forward again if old subscriptions should be discarded.
+
 ### Reach your other gateways from one Webapp
 
 The Webapp's **Settings → Gateways** has the same **Saved connections** list as the native app,

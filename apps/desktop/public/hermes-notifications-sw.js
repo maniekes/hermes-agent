@@ -39,6 +39,18 @@ self.addEventListener('notificationclick', event => {
   const data = event.notification.data
   event.notification.close()
 
+  if (data?.push === true) {
+    const target = new URL(app)
+    if (typeof data.pushSession === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(data.pushSession) &&
+      typeof data.pushProfile === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(data.pushProfile)) {
+      target.searchParams.set('profile', data.pushProfile)
+      target.searchParams.set('pushSession', data.pushSession)
+    }
+    event.waitUntil(self.clients.openWindow(target.href))
+
+    return
+  }
+
   if (typeof data?.clientId !== 'string') {
     return
   }
@@ -71,4 +83,30 @@ self.addEventListener('notificationclick', event => {
       }
     })()
   )
+})
+
+self.addEventListener('push', event => {
+  let payload
+
+  try {
+    payload = event.data?.json()
+  } catch {
+    // Older or invalid payloads still result in a visible, generic notification.
+  }
+
+  const id = typeof payload?.id === 'string' && /^[0-9a-f]{32}$/.test(payload.id) ? payload.id : ''
+  const hasTarget =
+    payload?.kind === 'turn' &&
+    typeof payload.session === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(payload.session) &&
+    typeof payload.profile === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(payload.profile)
+
+  event.waitUntil(self.registration.showNotification('Hermes', {
+    body: payload?.kind === 'test' ? 'Test notification' : 'Response ready',
+    data: {
+      push: true,
+      ...(hasTarget ? { pushSession: payload.session, pushProfile: payload.profile } : {})
+    },
+    renotify: false,
+    tag: id ? `hermes:push:${id}` : 'hermes:push'
+  }))
 })
