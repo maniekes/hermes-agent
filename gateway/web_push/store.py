@@ -45,6 +45,8 @@ CREATE INDEX IF NOT EXISTS web_push_outbox_device ON web_push_outbox(device, ver
 """
 GRACE_SECONDS = 3
 TTL_SECONDS = 3600
+PREVIEW_TITLE_SOURCE_LIMIT = 4096
+PREVIEW_ANSWER_SOURCE_LIMIT = 16384
 
 
 def device_grant(conn, device):
@@ -247,8 +249,9 @@ def preview_source(conn, row):
 
     # Read only the exact settlement's final response. Never fall back to recent messages.
     return conn.execute(
-        """SELECT substr(s.title, 1, 4096) AS title,
-                  substr(json_extract(r.value, '$.result.final_response'), 1, 16384) AS answer
+        """SELECT substr(s.title, 1, ?) AS title,
+                  substr(json_extract(r.value, '$.result.final_response'), 1, ?) AS answer
            FROM sessions s JOIN state_meta r ON r.key=?
            WHERE s.id=? AND CASE WHEN json_valid(r.value) THEN json_type(r.value, '$.result.final_response') END='text'""",
-        (RESULT_PREFIX + row["id"], row["session_id"])).fetchone()
+        (PREVIEW_TITLE_SOURCE_LIMIT + 1, PREVIEW_ANSWER_SOURCE_LIMIT + 1,
+         RESULT_PREFIX + row["id"], row["session_id"])).fetchone()

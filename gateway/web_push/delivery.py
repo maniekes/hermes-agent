@@ -24,6 +24,12 @@ from gateway.web_push import store
 from hermes_cli import browser_credential
 
 logger = logging.getLogger(__name__)
+
+
+class PreviewSendUnconfirmed(Exception):
+    """The generic preference committed while a reserved preview was in flight."""
+
+
 _ENDPOINT = re.compile(
     r"https://(fcm\.googleapis\.com)/(wp|fcm/send)/[A-Za-z0-9_-][A-Za-z0-9_:-]{15,2047}"
 )
@@ -156,6 +162,7 @@ class WebPush:
         self.control_db = control_db
         self._dispatch = Condition()
         self._sending = None
+        self._sending_preview = None
         self.cipher = AESGCM(self.storage_secret)
         self.send = send or webpush
 
@@ -237,7 +244,23 @@ class WebPush:
         row = self.active(authority, device, owner, login)
         if row is None:
             return None
-        return authority.db._execute_write(lambda conn: store.set_preview(conn, row, preview))
+        saved = authority.db._execute_write(lambda conn: store.set_preview(conn, row, preview))
+        if saved is False:
+            with self._dispatch:
+                if not self._dispatch.wait_for(
+                    lambda: self._sending_preview != (authority.profile_id, device), timeout=7
+                ):
+                    raise PreviewSendUnconfirmed()
+        return saved
+
+    def _reserve_preview(self, authority, row):
+        # An opt-out writes before joining this boundary. It either wins the fresh
+        # read or waits for this reserved attempt before acknowledging.
+        with self._dispatch, authority.db._read_ctx() as conn:
+            allowed = store.dispatch_preview(conn, row)
+            if allowed:
+                self._sending_preview = (authority.profile_id, row["device"])
+            return allowed
 
     def binding(self, authority, device, owner, login):
         row = self.active(authority, device, owner, login)
@@ -292,6 +315,7 @@ class WebPush:
         finally:
             with self._dispatch:
                 self._sending = None
+                self._sending_preview = None
                 self._dispatch.notify_all()
         return True
 
@@ -315,9 +339,10 @@ class WebPush:
                 from gateway.web_push.preview import make_preview
 
                 preview = make_preview(source["title"], source["answer"])
-                # Formatting may take time. An opt-out during formatting must win.
                 with authority.db._read_ctx() as conn:
                     allowed = store.dispatch_preview(conn, row)
+                if allowed and preview is not None:
+                    allowed = self._reserve_preview(authority, row)
                 if allowed is None:
                     return
                 if not allowed:
