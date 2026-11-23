@@ -13,7 +13,7 @@ from hermes_cli.browser_credential import generation
 from hermes_state import SessionDB
 from hermes_state_runtime import begin_runtime_epoch
 from tests.gateway.test_web_push import _admit, _complete, _register, credentials, db, endpoint
-from tests.hermes_cli.test_webapp_gated_sign_out import _sign_in_with_oauth, _sign_in_with_password, gated
+from tests.hermes_cli.test_webapp_gated_sign_out import _sign_in_with_oauth, _sign_in_with_password, gated, sign_out
 from tests.hermes_cli.test_webapp_push import DESKTOP, PATH, PHONE, _headers
 
 
@@ -76,11 +76,13 @@ def _due_now(authority):
         "UPDATE web_push_outbox SET due_at=0 WHERE due_at IS NOT NULL"))
 
 
-def test_logout_revokes_and_same_installation_can_enroll_as_new_owner(fixture, endpoint):
+def test_logout_revokes_and_same_installation_can_enroll_as_new_owner(fixture, gated, endpoint):
     browser, authority, push = fixture.browser, fixture.default, fixture.runner.web_push
     assert _enroll(browser, endpoint).status_code == 200
+    another_browser = gated.browser()
+    _sign_in_with_password(another_browser)
     other_endpoint = {**endpoint, "endpoint": endpoint["endpoint"] + "-other-device"}
-    assert _enroll(browser, other_endpoint, device=DESKTOP).status_code == 200
+    assert _enroll(another_browser, other_endpoint, device=DESKTOP).status_code == 200
     assert _act(browser, "test").json() == {"applied": True}
     assert browser.post("/auth/logout", headers=_headers(PHONE), follow_redirects=False).status_code == 302
     assert browser.get(PATH, headers=_headers(PHONE)).status_code == 401
@@ -89,8 +91,6 @@ def test_logout_revokes_and_same_installation_can_enroll_as_new_owner(fixture, e
     _sign_in_with_oauth(browser)
     assert browser.get(PATH, headers=_headers(PHONE)).json()["active"] is False
     assert _enroll(browser, endpoint).status_code == 200
-    another_browser = fixture.browser
-    _sign_in_with_password(another_browser)
     assert another_browser.get(PATH, headers=_headers(DESKTOP)).json()["active"] is True
 
 
@@ -307,3 +307,70 @@ def test_revocation_timeout_reports_uncertainty_and_keeps_future_sends_disabled(
     assert browser.get(PATH, headers=_headers(PHONE)).json()["active"] is False
     assert not push.deliver_one(authority, "default", generation())
     assert fixture.sends == []
+
+
+def test_expired_access_cookie_explicit_logout_revokes_its_pending_delivery(fixture, endpoint):
+    browser, authority, push = fixture.browser, fixture.default, fixture.runner.web_push
+    assert _enroll(browser, endpoint).status_code == 200
+    assert _act(browser, "test").status_code == 200
+    for cookie in list(browser.cookies.jar):
+        if "hermes_session_at" in cookie.name:
+            browser.cookies.jar.clear(cookie.domain, cookie.path, cookie.name)
+    assert browser.post("/auth/logout", headers=_headers(PHONE), follow_redirects=False).status_code == 302
+    push.deliver_one(authority, "default", generation())
+    assert fixture.sends == []
+    _sign_in_with_oauth(browser)
+    assert _enroll(browser, endpoint).status_code == 200
+
+
+def test_repeated_old_logout_cannot_revoke_new_owner(fixture, gated, endpoint):
+    browser, authority, push = fixture.browser, fixture.default, fixture.runner.web_push
+    assert _enroll(browser, endpoint).status_code == 200
+    old_browser = gated.browser()
+    old_browser.cookies.update(browser.cookies)
+    assert browser.post("/auth/logout", headers=_headers(PHONE), follow_redirects=False).status_code == 302
+    _sign_in_with_oauth(browser)
+    assert _enroll(browser, endpoint).status_code == 200
+    assert _act(browser, "test").status_code == 200
+    assert old_browser.post("/auth/logout", headers=_headers(PHONE), follow_redirects=False).status_code == 302
+    active = browser.get(PATH, headers=_headers(PHONE)).json()["active"]
+    push.deliver_one(authority, "default", generation())
+    assert (active, len(fixture.sends)) == (True, 1)
+
+
+def test_global_signout_allows_new_owner_to_enroll_on_same_installation(fixture, gated, sign_out, endpoint):
+    browser, authority, push = fixture.browser, fixture.default, fixture.runner.web_push
+    assert _enroll(browser, endpoint).status_code == 200
+    assert _act(browser, "test").status_code == 200
+    next_owner = gated.browser()
+    _sign_in_with_oauth(next_owner)
+    assert _enroll(next_owner, endpoint).status_code == 409
+    sign_out()
+    push.deliver_one(authority, "default", generation())
+    assert fixture.sends == []
+    _sign_in_with_oauth(next_owner)
+    assert next_owner.get(PATH, headers=_headers(PHONE)).json()["active"] is False
+    assert _enroll(next_owner, endpoint).status_code == 200
+
+
+def test_hidden_profile_disable_does_not_leave_queued_delivery_alive(
+        fixture, endpoint, credentials, monkeypatch, tmp_path):
+    from hermes_cli.web_routers import web_push
+
+    browser, beta, push = fixture.browser, fixture.beta, fixture.runner.web_push
+    for profile in ("beta", "default"):
+        assert _enroll(browser, endpoint, profile=profile).status_code == 200
+        assert _act(browser, "test", profile=profile).status_code == 200
+    with monkeypatch.context() as patch:
+        patch.setattr(web_push, "local_bots", lambda runner: [LocalBot("default", tmp_path, fixture.default)])
+        status = browser.get(PATH, headers=_headers(PHONE), params={"profile": "beta"})
+        assert status.json() == {"available": False, "active": False}
+        disabled = _act(browser, "disable", profile="beta")
+    assert disabled.json() == {"applied": True}
+    with SessionDB(fixture.default.db.db_path) as control, SessionDB(beta.db.db_path) as ledger:
+        restarted = WebPush(credentials, send=push.send, control_db=control)
+        authority = SimpleNamespace(profile_id=beta.profile_id, db=ledger)
+        restarted.deliver_one(authority, "beta", generation())
+        restarted.deliver_one(fixture.default, "default", generation())
+    assert [data["profile"] for _, data in fixture.sends] == ["default"]
+    assert _enroll(browser, endpoint, profile="beta").status_code == 200

@@ -8,7 +8,14 @@ SCHEMA = """
 CREATE TABLE IF NOT EXISTS web_push_devices (
     device TEXT PRIMARY KEY,
     owner TEXT,
-    generation INTEGER NOT NULL
+    generation INTEGER NOT NULL,
+    login TEXT
+);
+CREATE TABLE IF NOT EXISTS web_push_profile_grants (
+    device TEXT NOT NULL,
+    profile TEXT NOT NULL,
+    generation INTEGER NOT NULL,
+    PRIMARY KEY (device, profile)
 );
 CREATE TABLE IF NOT EXISTS web_push_subscriptions (
     device TEXT PRIMARY KEY,
@@ -20,7 +27,8 @@ CREATE TABLE IF NOT EXISTS web_push_subscriptions (
     material TEXT NOT NULL,
     sealed BLOB NOT NULL,
     updated_at REAL NOT NULL,
-    grant INTEGER NOT NULL DEFAULT 0
+    grant INTEGER NOT NULL DEFAULT 0,
+    profile_grant INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS web_push_outbox (
     id TEXT PRIMARY KEY,
@@ -39,25 +47,31 @@ TTL_SECONDS = 3600
 
 
 def device_grant(conn, device):
-    row = conn.execute("SELECT owner, generation FROM web_push_devices WHERE device=?", (device,)).fetchone()
-    return tuple(row) if row is not None else (None, 0)
+    row = conn.execute("SELECT owner, generation, login FROM web_push_devices WHERE device=?", (device,)).fetchone()
+    return tuple(row) if row is not None else (None, 0, None)
 
 
-def enroll_device(conn, device, owner):
-    current, grant = device_grant(conn, device)
-    if current not in (None, owner):
+def enroll_device(conn, device, owner, login, profile):
+    current, grant, recorded_login = device_grant(conn, device)
+    # A different owner may take over only after a known login generation has ended.
+    if current not in (None, owner) and recorded_login in (None, login):
         return None
-    conn.execute("""INSERT INTO web_push_devices VALUES (?, ?, ?)
-                    ON CONFLICT(device) DO UPDATE SET owner=excluded.owner""", (device, owner, grant))
-    return grant
+    if current is not None and recorded_login != login:
+        grant += 1
+    conn.execute("""INSERT INTO web_push_devices (device,owner,generation,login) VALUES (?,?,?,?)
+                    ON CONFLICT(device) DO UPDATE SET
+                    owner=excluded.owner, generation=excluded.generation, login=excluded.login""",
+                 (device, owner, grant, login))
+    conn.execute("INSERT OR IGNORE INTO web_push_profile_grants VALUES (?,?,0)", (device, profile))
+    return grant, profile_grant(conn, device, profile)
 
 
-def revoke_device(conn, device, owner):
-    current, grant = device_grant(conn, device)
-    if current not in (None, owner):
+def revoke_device(conn, device, owner, login):
+    current, grant, recorded_login = device_grant(conn, device)
+    if current is not None and (current != owner or recorded_login not in (None, login)):
         return False
-    conn.execute("""INSERT INTO web_push_devices VALUES (?, NULL, ?)
-                    ON CONFLICT(device) DO UPDATE SET owner=NULL, generation=excluded.generation""",
+    conn.execute("""INSERT INTO web_push_devices (device,owner,generation) VALUES (?,NULL,?)
+                    ON CONFLICT(device) DO UPDATE SET owner=NULL, generation=excluded.generation, login=NULL""",
                  (device, grant + 1))
     local = conn.execute(
         "SELECT version FROM web_push_subscriptions WHERE device=? AND owner=? AND grant<=?",
@@ -67,6 +81,22 @@ def revoke_device(conn, device, owner):
     return True
 
 
+def profile_grant(conn, device, profile):
+    row = conn.execute("SELECT generation FROM web_push_profile_grants WHERE device=? AND profile=?",
+                       (device, profile)).fetchone()
+    return row["generation"] if row is not None else 0
+
+
+def revoke_profile(conn, device, owner, login, profile):
+    # The profile database can be unavailable; the dispatcher still checks this fence on return.
+    current, _, recorded_login = device_grant(conn, device)
+    if (current, recorded_login) != (owner, login):
+        return None
+    row = conn.execute("""UPDATE web_push_profile_grants SET generation=generation+1
+                          WHERE device=? AND profile=? RETURNING generation""", (device, profile)).fetchone()
+    return row["generation"] if row is not None else None
+
+
 def subscription(conn, device, owner, login, vapid, grant=0):
     return conn.execute(
         """SELECT * FROM web_push_subscriptions
@@ -74,9 +104,9 @@ def subscription(conn, device, owner, login, vapid, grant=0):
         (device, owner, login, vapid, grant)).fetchone()
 
 
-def subscribe(conn, device, owner, login, vapid, endpoint, sealed, now, *, material='', grant=0):
+def subscribe(conn, device, owner, login, vapid, endpoint, sealed, now, *, material='', grant=0, profile_grant=0):
     current = conn.execute("SELECT * FROM web_push_subscriptions WHERE device=?", (device,)).fetchone()
-    if current is not None and (current["grant"] > grant or (
+    if current is not None and ((current["grant"], current["profile_grant"]) > (grant, profile_grant) or (
         current["grant"] == grant and current["owner"] != owner
     )):
         return None
@@ -84,8 +114,8 @@ def subscribe(conn, device, owner, login, vapid, endpoint, sealed, now, *, mater
     if occupied is not None and occupied["device"] != device:
         return None
     if current is not None:
-        same = (current["login"], current["vapid"], current["endpoint"], current["material"], current["grant"]) == (
-            login, vapid, endpoint, material, grant)
+        same = (current["login"], current["vapid"], current["endpoint"], current["material"],
+                current["grant"], current["profile_grant"]) == (login, vapid, endpoint, material, grant, profile_grant)
         if same:
             conn.execute("UPDATE web_push_subscriptions SET sealed=?, updated_at=? WHERE device=?",
                          (sealed, now, device))
@@ -93,9 +123,9 @@ def subscribe(conn, device, owner, login, vapid, endpoint, sealed, now, *, mater
         retire(conn, device, current["version"])
     version = uuid4().hex
     conn.execute("""INSERT INTO web_push_subscriptions
-                    (device,owner,login,vapid,endpoint,version,material,sealed,updated_at,grant)
-                    VALUES (?,?,?,?,?,?,?,?,?,?)""",
-                 (device, owner, login, vapid, endpoint, version, material, sealed, now, grant))
+                    (device,owner,login,vapid,endpoint,version,material,sealed,updated_at,grant,profile_grant)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                 (device, owner, login, vapid, endpoint, version, material, sealed, now, grant, profile_grant))
     return version
 
 
@@ -106,9 +136,10 @@ def retire(conn, device, version):
                  (device, version))
 
 
-def revoke(conn, device, owner, login):
-    row = conn.execute("SELECT version FROM web_push_subscriptions WHERE device=? AND owner=? AND login=?",
-                       (device, owner, login)).fetchone()
+def revoke(conn, device, owner, login, *, before_profile_grant):
+    row = conn.execute("""SELECT version FROM web_push_subscriptions
+                          WHERE device=? AND owner=? AND login=? AND profile_grant<?""",
+                       (device, owner, login, before_profile_grant)).fetchone()
     if row is None:
         return False
     retire(conn, device, row["version"])
@@ -167,7 +198,7 @@ def seen(conn, event_id, device, owner, login):
 
 def next_delivery(conn, now):
     return conn.execute(
-        """SELECT q.*, s.sealed, s.login, s.vapid, s.owner, s.grant FROM web_push_outbox q
+        """SELECT q.*, s.sealed, s.login, s.vapid, s.owner, s.grant, s.profile_grant FROM web_push_outbox q
            JOIN web_push_subscriptions s ON s.device=q.device AND s.version=q.version
            WHERE q.due_at<=? AND q.expires_at>? ORDER BY q.due_at LIMIT 1""", (now, now)).fetchone()
 

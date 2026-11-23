@@ -40,6 +40,7 @@ PKCE_COOKIE = "hermes_session_pkce"
 SSO_ATTEMPT_COOKIE = "hermes_sso_attempt"
 #: The Webapp's sign-in binding (``hermes_cli.webapp_sign_in``); set beside the session cookies.
 WEBAPP_SIGNIN_COOKIE = "hermes_webapp_signin"
+WEB_PUSH_REVOKE_COOKIE = "hermes_webpush_revoke"
 
 # Name variants a reader may have to try; most strict first.
 _NAME_VARIANTS = ("__Host-", "__Secure-", "")
@@ -203,6 +204,16 @@ def set_webapp_signin_cookie(response: Response, *, value: str, use_https: bool,
 
 def read_webapp_signin_cookie(request: Request, gateway: str = "") -> Optional[str]:
     return _read_with_fallback(request, gateway_cookie_name(WEBAPP_SIGNIN_COOKIE, gateway))
+
+
+def set_web_push_revoke_cookie(response: Response, request: Request, value: str, gateway: str) -> None:
+    """Carry the enrollment-specific logout proof beyond the lifetime of the access cookie."""
+    _set(response, gateway_cookie_name(WEB_PUSH_REVOKE_COOKIE, gateway), value, max_age=400 * 24 * 60 * 60,
+         use_https=detect_https(request), prefix=prefix_from_request(request))
+
+
+def read_web_push_revoke_cookie(request: Request, gateway: str) -> Optional[str]:
+    return _read_with_fallback(request, gateway_cookie_name(WEB_PUSH_REVOKE_COOKIE, gateway))
 
 
 def read_pkce_cookie(request: Request, gateway: str = "") -> Optional[str]:

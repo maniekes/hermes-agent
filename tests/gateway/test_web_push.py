@@ -8,6 +8,7 @@ import pytest
 
 from gateway.web_push import store
 from gateway.web_push.delivery import WebPush, endpoint_route, installation_digest, retry_at
+from hermes_cli.browser_credential import generation
 from hermes_state import SessionDB
 from hermes_state_runtime import (
     admit_session_input, begin_runtime_epoch, claim_session_input, recover_session_inputs,
@@ -79,9 +80,9 @@ def test_revoke_pending_and_retire_only_exact_version(db):
     first = _register(db)
     _admit(db, "phone")
     assert _complete(db)["web_push"]
-    assert not db._execute_write(lambda conn: store.revoke(conn, "phone", "other", "login"))
+    assert not db._execute_write(lambda conn: store.revoke(conn, "phone", "other", "login", before_profile_grant=1))
     assert _due(db) is not None
-    assert db._execute_write(lambda conn: store.revoke(conn, "phone", "owner", "login"))
+    assert db._execute_write(lambda conn: store.revoke(conn, "phone", "owner", "login", before_profile_grant=1))
     assert _due(db) is None
     fresh = _register(db)
     assert first != fresh
@@ -148,6 +149,7 @@ def endpoint(credentials):
 
 
 def test_encrypted_store_retries_and_expired_provider(db, credentials, endpoint):
+    login = generation()
     requests = []
     statuses = iter((429, 410))
 
@@ -158,27 +160,27 @@ def test_encrypted_store_retries_and_expired_provider(db, credentials, endpoint)
     push = WebPush(credentials, send=fake_send)
     authority = SimpleNamespace(db=db, profile_id="sample")
     device = installation_digest("a" * 64)
-    assert push.register(authority, device, "owner", "login", endpoint)
+    assert push.register(authority, device, "owner", login, endpoint) is not None
     with db._read_ctx() as conn:
-        saved = store.subscription(conn, device, "owner", "login", push.vapid_id)
+        saved = store.subscription(conn, device, "owner", login, push.vapid_id)
         assert endpoint["endpoint"].encode() not in saved["sealed"]
         assert saved["endpoint"] != endpoint["endpoint"]
-    binding = lambda conn, admission: store.bind(conn, admission, device, "owner", "login", push.vapid_id)
+    binding = lambda conn, admission: store.bind(conn, admission, device, "owner", login, push.vapid_id)
     admit_session_input(db, epoch=1, principal_id="human", session_id="chat", request_id="turn",
                         payload={"text": "private prompt"}, _on_new_admission=binding)
     assert _complete(db)["web_push"]
     db._execute_write(lambda conn: conn.execute("UPDATE web_push_outbox SET due_at=0"))
-    assert push.deliver_one(authority, "sample", "login")
-    assert not push.deliver_one(authority, "sample", "login")
+    assert push.deliver_one(authority, "sample", login)
+    assert not push.deliver_one(authority, "sample", login)
     with db._read_ctx() as conn:
         row = conn.execute("SELECT attempts, due_at FROM web_push_outbox").fetchone()
         assert row["attempts"] == 1 and row["due_at"] >= time.time() + 40
     data = json.loads(requests[0][1]["data"])
     assert data == {"id": data["id"], "kind": "turn", "profile": "sample", "session": "chat"}
     db._execute_write(lambda conn: conn.execute("UPDATE web_push_outbox SET due_at=0"))
-    assert push.deliver_one(authority, "sample", "login")
+    assert push.deliver_one(authority, "sample", login)
     with db._read_ctx() as conn:
-        assert store.subscription(conn, device, "owner", "login", push.vapid_id) is None
+        assert store.subscription(conn, device, "owner", login, push.vapid_id) is None
 
 
 @pytest.mark.parametrize("host", ["127.0.0.1", "fcm.googleapis.com.evil.example", "fcm.googleapis.com@127.0.0.1"])

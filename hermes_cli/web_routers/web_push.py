@@ -1,5 +1,6 @@
 """Authenticated Webapp registration and delivery controls."""
 from functools import partial
+import hmac
 import json
 import re
 
@@ -7,12 +8,14 @@ from fastapi import APIRouter, HTTPException, Request
 from starlette.concurrency import run_in_threadpool
 from starlette.responses import JSONResponse
 
-from gateway.session_authorities import local_bots
+from gateway.session_authorities import local_bots, served_profile_name
 from gateway.session_identity import authenticated_principal_digest
 from gateway.web_push import store
 from gateway.web_push.delivery import installation_digest
+from hermes_cli import browser_credential
+from hermes_cli.dashboard_auth.cookies import read_web_push_revoke_cookie, set_web_push_revoke_cookie
 from hermes_cli.dashboard_auth.request_utils import cookie_origin_is_allowed
-from hermes_cli.webapp_sign_in import check, sign_in_of
+from hermes_cli.webapp_sign_in import check, cookie_gateway, sign_in_of
 
 router = APIRouter(prefix="/api/webapp/web-push")
 _DEVICE_HEADER = "x-hermes-push-installation"
@@ -34,11 +37,16 @@ def _principal(session):
     })
 
 
-def _revoke_installation(state, device, owner):
+def _control_db(state):
     authority = getattr(state, "session_authority", None)
     if authority is None:
         raise HTTPException(503, "Web Push revocation could not be recorded")
-    return authority.db._execute_write(lambda conn: store.revoke_device(conn, device, owner))
+    return authority.db
+
+
+def _logout_proof(key, device, owner, grant):
+    message = json.dumps(["web-push-logout", device, owner, grant], separators=(",", ":"))
+    return hmac.digest(key.encode(), message.encode(), "sha256").hex()
 
 
 def _confirm_revocation(push, device):
@@ -51,30 +59,27 @@ async def revoke_on_logout(request):
     device = _device(request)
     if (getattr(state, "ui_surface", None) != "webapp" or getattr(state, "session_authority", None) is None
             or device is None
-            or not request.headers.get("origin") or not cookie_origin_is_allowed(request)):
+            or not request.headers.get("origin") or not cookie_origin_is_allowed(request) or not check(request)):
+        return
+    login = sign_in_of(request)
+    key = browser_credential.current_if(login)
+    proof = read_web_push_revoke_cookie(request, cookie_gateway(request))
+    if key is None or proof is None or not re.fullmatch(r"[0-9a-f]{64}", proof):
         return
     from hermes_cli.dashboard_auth.middleware import peek_session
 
     session = await run_in_threadpool(peek_session, request)
-    if session is not None and sign_in_of(request):
-        owner = _principal(session)
-    elif check(request):
-        # An explicit sign-out can outlive the access cookie. The current Webapp sign-in
-        # binding plus the unguessable installation proof still names only this grant.
-        authority = getattr(state, "session_authority", None)
-        if authority is None:
-            return
+    principal = _principal(session) if session is not None else None
 
-        def installed_owner():
-            with authority.db._read_ctx() as conn:
-                return store.device_grant(conn, device)[0]
+    def revoke_proven_grant(conn):
+        owner, grant, recorded_login = store.device_grant(conn, device)
+        # The cookie proves this exact enrollment even if the access cookie is gone.
+        if (owner is None or recorded_login != login or principal not in (None, owner)
+                or not hmac.compare_digest(proof, _logout_proof(key, device, owner, grant))):
+            return False
+        return store.revoke_device(conn, device, owner, login)
 
-        owner = await run_in_threadpool(installed_owner)
-        if owner is None:
-            return
-    else:
-        return
-    if await run_in_threadpool(_revoke_installation, state, device, owner):
+    if await run_in_threadpool(_control_db(state)._execute_write, revoke_proven_grant):
         push = getattr(getattr(state, "gateway_runner", None), "web_push", None)
         await run_in_threadpool(_confirm_revocation, push, device)
 
@@ -128,12 +133,26 @@ async def push_action(request: Request, action: str, profile: str | None = None)
         raise HTTPException(403, "Web Push requests must come from this Webapp")
     push, authority, device, owner, login = _context(request, profile)
     value = await _read_body(request)
+    state = request.app.state
     if action == "disable-all" and value == {}:
-        applied = await run_in_threadpool(_revoke_installation, request.app.state, device, owner)
+        write = partial(store.revoke_device, device=device, owner=owner, login=login)
+        applied = await run_in_threadpool(_control_db(state)._execute_write, write)
         if applied:
             await run_in_threadpool(_confirm_revocation, push, device)
         return _response(applied=applied)
-    if authority is None or (push is None and action != "disable"):
+    if action == "disable" and value == {}:
+        control = _control_db(state)
+        name = profile or served_profile_name(state.session_authority.profile_id)
+        write = partial(store.revoke_profile, device=device, owner=owner, login=login, profile=name)
+        revoked_grant = await run_in_threadpool(control._execute_write, write)
+        if revoked_grant is not None:
+            if authority is not None:
+                retire = partial(store.revoke, device=device, owner=owner, login=login,
+                                 before_profile_grant=revoked_grant)
+                await run_in_threadpool(authority.db._execute_write, retire)
+            await run_in_threadpool(_confirm_revocation, push, device)
+        return _response(applied=revoked_grant is not None)
+    if authority is None or push is None:
         raise HTTPException(404, "Web Push is unavailable")
     if action in {"subscribe", "check"}:
         try:
@@ -141,8 +160,14 @@ async def push_action(request: Request, action: str, profile: str | None = None)
             result = await run_in_threadpool(operation, authority, device, owner, login, value)
         except ValueError:
             raise HTTPException(400, "Invalid or unsupported Web Push subscription") from None
-        if action == "subscribe" and result is None:
-            raise HTTPException(409, "Web Push subscription is assigned to another installation")
+        if action == "subscribe":
+            key = browser_credential.current_if(login)
+            if result is None or key is None:
+                raise HTTPException(409, "Web Push subscription is assigned to another installation")
+            response = _response(active=True)
+            set_web_push_revoke_cookie(response, request, _logout_proof(key, device, owner, result),
+                                       cookie_gateway(request))
+            return response
         return _response(active=bool(result))
     if action == "test" and value == {}:
         state = await run_in_threadpool(push.test, authority, device, owner, login)
@@ -151,11 +176,6 @@ async def push_action(request: Request, action: str, profile: str | None = None)
         if state == "recent":
             raise HTTPException(429, "A Web Push test finished recently", headers={"Retry-After": "30"})
         return _response(applied=True)
-    if action == "disable" and value == {}:
-        write = partial(store.revoke, device=device, owner=owner, login=login)
-        applied = await run_in_threadpool(authority.db._execute_write, write)
-        await run_in_threadpool(_confirm_revocation, push, device)
-        return _response(applied=applied)
     if action == "seen" and isinstance(value, str) and re.fullmatch(r"[0-9a-f]{32}", value):
         write = partial(store.seen, event_id=value, device=device, owner=owner, login=login)
         return _response(applied=await run_in_threadpool(authority.db._execute_write, write))

@@ -19,7 +19,9 @@ import time
 from threading import Condition
 from types import SimpleNamespace
 
+from gateway.session_authorities import served_profile_name
 from gateway.web_push import store
+from hermes_cli import browser_credential
 
 logger = logging.getLogger(__name__)
 _ENDPOINT = re.compile(
@@ -168,16 +170,25 @@ class WebPush:
     def register(self, authority, device, owner, login, value):
         subscription = normalize_subscription(value)
         control = self.control_db or authority.db
-        grant = control._execute_write(lambda conn: store.enroll_device(conn, device, owner))
-        if grant is None:
+
+        def enroll(conn):
+            if browser_credential.is_current(login):
+                return store.enroll_device(conn, device, owner, login, served_profile_name(authority.profile_id))
             return None
+
+        grants = control._execute_write(enroll)
+        if grants is None:
+            return None
+        grant, profile_grant = grants
         encoded = self._encoded(subscription)
         fingerprint = hmac.digest(self.storage_secret, subscription["endpoint"].encode(), "sha256").hex()
         material = hmac.digest(self.storage_secret, encoded, "sha256").hex()
         nonce = secrets.token_bytes(12)
         sealed = nonce + self.cipher.encrypt(nonce, encoded, self._aad(authority, device))
-        return authority.db._execute_write(lambda conn: store.subscribe(
-            conn, device, owner, login, self.vapid_id, fingerprint, sealed, time.time(), material=material, grant=grant))
+        version = authority.db._execute_write(lambda conn: store.subscribe(
+            conn, device, owner, login, self.vapid_id, fingerprint, sealed, time.time(),
+            material=material, grant=grant, profile_grant=profile_grant))
+        return grant if version is not None else None
 
     @staticmethod
     def _encoded(subscription):
@@ -201,17 +212,18 @@ class WebPush:
     def _retire(self, authority, row):
         authority.db._execute_write(lambda conn: store.retire(conn, row["device"], row["version"]))
 
-    def _device_grant(self, authority, device):
+    def _grants(self, authority, device):
         with (self.control_db or authority.db)._read_ctx() as conn:
-            return store.device_grant(conn, device)
+            return store.device_grant(conn, device), store.profile_grant(
+                conn, device, served_profile_name(authority.profile_id))
 
     def active(self, authority, device, owner, login):
-        current, grant = self._device_grant(authority, device)
-        if current != owner:
+        (current, grant, recorded_login), profile_grant = self._grants(authority, device)
+        if (current, recorded_login) != (owner, login):
             return None
         with authority.db._read_ctx() as conn:
             row = store.subscription(conn, device, owner, login, self.vapid_id, grant)
-        if row is not None and self._open(authority, row) is not None:
+        if row is not None and row["profile_grant"] == profile_grant and self._open(authority, row) is not None:
             return row
         return None
 
@@ -275,8 +287,9 @@ class WebPush:
         return True
 
     def _deliver_claim(self, authority, profile, login, row):
-        grant = self._device_grant(authority, row["device"])
-        if row["vapid"] != self.vapid_id or row["login"] != login or grant != (row["owner"], row["grant"]):
+        device_grant, profile_grant = self._grants(authority, row["device"])
+        if (row["vapid"] != self.vapid_id or row["login"] != login
+                or device_grant != (row["owner"], row["grant"], login) or row["profile_grant"] != profile_grant):
             self._retire(authority, row)
             return
         subscription = self._open(authority, row)

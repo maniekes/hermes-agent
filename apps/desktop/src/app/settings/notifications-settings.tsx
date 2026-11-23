@@ -1,6 +1,6 @@
 import { LOCAL_CONNECTION_ID } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
-import { type ReactNode, useEffect, useState } from 'react'
+import { type ReactNode, useEffect, useRef, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
@@ -99,6 +99,7 @@ export function NotificationsSettings({ subpage }: NotificationsSettingsProps = 
   const pushScope = localBrowser ? profile ?? '' : null
   const [pushState, setPushState] = useState<{ scope: null | string; status?: WebPushStatus; failed?: boolean }>({ scope: null })
   const [pushBusy, setPushBusy] = useState(false)
+  const pushReads = useRef({ version: 0 })
   const pushStatus = pushState.scope === pushScope ? pushState.status : undefined
   const pushError = pushState.scope === pushScope && pushState.failed
   const showAlerts = subpage === undefined || subpage === 'alerts'
@@ -106,17 +107,22 @@ export function NotificationsSettings({ subpage }: NotificationsSettingsProps = 
 
   useSettingDeepLink('notifications', page => subpage === undefined || page === subpage)
 
+  // eslint-disable-next-line no-restricted-syntax -- This effect owns a request token for the mounted profile.
   useEffect(() => {
     if (!showAlerts || !localBrowser) {
       return
     }
 
     let current = true
+    const reads = { version: 0 }
+    pushReads.current = reads
 
     const refresh = () => {
+      const version = ++reads.version
+
       void browserPushStatus(profile).then(
-        status => { if (current) { setPushState({ scope: pushScope, status }) } },
-        () => { if (current) { setPushState({ failed: true, scope: pushScope }) } }
+        status => { if (current && version === reads.version) { setPushState({ scope: pushScope, status }) } },
+        () => { if (current && version === reads.version) { setPushState({ failed: true, scope: pushScope }) } }
       )
     }
 
@@ -131,24 +137,31 @@ export function NotificationsSettings({ subpage }: NotificationsSettingsProps = 
 
   const changeResponsePreference = async (on: boolean, master: boolean) => {
     if (!on && (localBrowser || (master && browser))) {
+      const reads = pushReads.current
+      reads.version++
       setPushBusy(true)
 
       try {
         await disableBrowserPush(master ? null : profile, master)
+        const status = localBrowser && !pushStatus ? await browserPushStatus(profile).catch(() => undefined) : undefined
 
-        if (pushStatus) {
-          setPushState({ scope: pushScope, status: { ...pushStatus, active: false, needsRepair: false } })
+        if (reads === pushReads.current) {
+          setPushState(previous => {
+            const current = (previous.scope === pushScope ? previous.status : undefined) ?? status
+
+            return current ? { scope: pushScope, status: { ...current, active: false, needsRepair: false } } : previous
+          })
         }
       } catch (error) {
         const methodMissing = error instanceof Error && /^(404|405):/.test(error.message)
 
         const unsupported = methodMissing &&
-          (pushStatus ?? await browserPushStatus(master ? null : profile).catch(() => undefined))?.available === false
+          (pushStatus ?? await browserPushStatus(master ? null : profile).catch(() => undefined))?.legacyBackend === true
 
         if (!unsupported) {
           const pending = error instanceof Error && (error.message.startsWith('503:') || error.name === 'AbortError')
 
-          if (pending) {
+          if (pending && reads === pushReads.current) {
             setPushState({ failed: true, scope: pushScope })
           }
 
@@ -157,6 +170,8 @@ export function NotificationsSettings({ subpage }: NotificationsSettingsProps = 
           return
         }
       } finally {
+        // A focus read can start while the server is still processing the opt-out.
+        reads.version++
         setPushBusy(false)
       }
     }
@@ -169,6 +184,8 @@ export function NotificationsSettings({ subpage }: NotificationsSettingsProps = 
   }
 
   const setupPush = async () => {
+    const reads = pushReads.current
+    reads.version++
     setPushBusy(true)
 
     try {
@@ -185,10 +202,15 @@ export function NotificationsSettings({ subpage }: NotificationsSettingsProps = 
       }
 
       await enableBrowserPush(profile, status.publicKey)
-      setPushState({ scope: pushScope, status: await browserPushStatus(profile) })
+      const enrolled = await browserPushStatus(profile)
+
+      if (reads === pushReads.current) {
+        setPushState({ scope: pushScope, status: enrolled })
+      }
     } catch {
       notify({ kind: 'error', message: pushCopy.failed })
     } finally {
+      reads.version++
       setPushBusy(false)
     }
   }
@@ -197,6 +219,8 @@ export function NotificationsSettings({ subpage }: NotificationsSettingsProps = 
     triggerHaptic('open')
 
     if (localBrowser) {
+      const reads = pushReads.current
+
       try {
         const status = pushStatus ?? await browserPushStatus(profile)
 
@@ -216,8 +240,17 @@ export function NotificationsSettings({ subpage }: NotificationsSettingsProps = 
           return
         }
       } catch {
+        if (reads !== pushReads.current) {
+          return
+        }
+
+        const version = ++reads.version
         const status = await browserPushStatus(profile).catch(() => undefined)
-        setPushState({ failed: !status, scope: pushScope, status })
+
+        if (reads === pushReads.current && version === reads.version) {
+          setPushState({ failed: !status, scope: pushScope, status })
+        }
+
         notify({ kind: 'error', message: copy.testFailed })
 
         return

@@ -5,7 +5,7 @@ import { MemoryRouter } from 'react-router'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
 import { browserPushStatus, disableBrowserPush, enableBrowserPush, testBrowserPush } from '@/lib/browser-web-push'
-import { sendTestNativeNotification, setNativeNotifyEnabled } from '@/store/native-notifications'
+import { sendTestNativeNotification, setNativeNotifyEnabled, setNativeNotifyKind } from '@/store/native-notifications'
 import { notify } from '@/store/notifications'
 
 import { NotificationsSettings } from './notifications-settings'
@@ -164,6 +164,7 @@ it('disables server delivery from Response ready and from the main toggle', asyn
 
 it('disables local notifications on an older backend returning POST 405', async () => {
   vi.mocked(setNativeNotifyEnabled).mockClear()
+  vi.mocked(browserPushStatus).mockResolvedValue({ active: false, available: false, legacyBackend: true })
   vi.mocked(disableBrowserPush).mockRejectedValue(new Error('405: Method Not Allowed'))
   renderAlerts()
   await act(async () => {
@@ -193,4 +194,28 @@ it('reports the test cooldown without queuing a second notification', async () =
   await sendTest()
   expect(notify).toHaveBeenLastCalledWith({ kind: 'info', message: expect.stringMatching(/finished recently/i) })
   expect(sendTestNativeNotification).not.toHaveBeenCalled()
+})
+
+it('does not revive active enrollment after a delayed focus refresh and successful disable', async () => {
+  const active = { active: true, available: true, publicKey: 'public' }
+  vi.mocked(browserPushStatus).mockResolvedValue(active)
+  renderAlerts()
+  await screen.findAllByText(/Web Push is active for this profile/i)
+  let completeRefresh!: (status: typeof active) => void
+  vi.mocked(browserPushStatus).mockReturnValueOnce(new Promise(resolve => { completeRefresh = resolve }))
+  fireEvent(window, new Event('focus'))
+  await act(async () => { fireEvent.click(screen.getByRole('switch', { name: 'Response ready' })) })
+  expect(screen.queryByText(/Web Push is active for this profile/i)).toBeNull()
+  await act(async () => completeRefresh(active))
+  expect(screen.queryByText(/Web Push is active for this profile/i)).toBeNull()
+})
+
+it('does not silently accept a profile opt-out when an existing feature returns profile unavailable', async () => {
+  vi.mocked(setNativeNotifyKind).mockClear()
+  vi.mocked(browserPushStatus).mockResolvedValue({ active: false, available: false })
+  vi.mocked(disableBrowserPush).mockRejectedValue(new Error('404: Web Push is unavailable'))
+  renderAlerts()
+  await act(async () => { fireEvent.click(screen.getByRole('switch', { name: 'Response ready' })) })
+  expect(setNativeNotifyKind).not.toHaveBeenCalled()
+  expect(notify).toHaveBeenLastCalledWith({ kind: 'error', message: expect.stringMatching(/could not be saved/i) })
 })

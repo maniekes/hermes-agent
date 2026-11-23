@@ -5,6 +5,7 @@ import { browserApi, browserBootstrap } from '@/lib/browser-transport'
 export interface WebPushStatus {
   active: boolean
   available: boolean
+  legacyBackend?: boolean
   publicKey?: string
   needsRepair?: boolean
 }
@@ -36,7 +37,7 @@ export async function browserPushStatus(profile?: null | string): Promise<WebPus
     status = await request<WebPushStatus>(profile) ?? unavailable
   } catch (error) {
     if (error instanceof Error && error.message.startsWith('404:')) {
-      return unavailable
+      return { ...unavailable, legacyBackend: true }
     }
 
     throw error
