@@ -98,6 +98,12 @@ class SessionMutateParams(Params):
     expected_generation: int | None = None
 
 
+class ResponseReadyPolicy(OpenModel):
+    mode: Literal["inherit", "on", "off"]
+    effective: Literal["on", "off"]
+    revision: int | None = None
+
+
 class SessionMutateResult(OpenModel):
     """The committed mutation receipt plus the operation's projection (``title``, ``archived``,
     ``branched_session_id``, compress ``status``/``lines``, …). ``revision`` is absent only on a
@@ -106,11 +112,12 @@ class SessionMutateResult(OpenModel):
     session_id: str
     operation: str
     revision: int | None = None
+    response_ready_policy: ResponseReadyPolicy | None = None
 
 
 canonical_method("session.mutate", params=SessionMutateParams, result=SessionMutateResult,
                  doc="Revision-fenced, retry-idempotent session edit (rename, archive, sidebar, branch, "
-                     "delete, rewind, reset, model, reasoning, workspace, edit_policy, compress, import).")
+                     "delete, rewind, reset, model, reasoning, workspace, edit_policy, response_ready, compress, import).")
 
 
 class SessionPruneParams(Params):
@@ -193,6 +200,7 @@ class CanonicalSessionInfo(SessionInventoryFields, OpenModel):
     lazy: bool
     profile_id: str
     desktop_protocol: str
+    response_ready_policy: ResponseReadyPolicy | None = None
     profile_name: str
     cwd: str | None = None
     # An ACP session's edit approval policy (``session.mutate edit_policy``): ask / workspace_session / session.

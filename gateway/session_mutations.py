@@ -15,7 +15,7 @@ from hermes_state_runtime import RuntimeStoreError, mutate_runtime_session
 
 logger = logging.getLogger(__name__)
 
-_METADATA = frozenset({'rename', 'archive', 'sidebar'})
+_METADATA = frozenset({'rename', 'archive', 'sidebar', 'response_ready'})
 # Prepared off the commit like model, then published as a new frozen policy.
 _POLICY = frozenset({'model', 'reasoning', 'workspace', 'editor_mcp', 'edit_policy'})
 # Controls that leave the transcript alone authorize on the lineage owner (see ``_owner_ref``).
@@ -45,6 +45,12 @@ def _authorize_control(authority, actor, ref, params, owner=None):
         raise RuntimeStoreError('profile_mismatch')
     if 'session:control' not in actor.capabilities:
         raise RuntimeStoreError('permission_denied')
+    if params['operation'] == 'response_ready':
+        from gateway.web_push.conversation import owns_policy
+        authority.authorize(actor, ref, 'session:control')
+        if not owns_policy(authority, ref, actor.subject):
+            raise RuntimeStoreError('permission_denied')
+        return False
     cold_history = False
     # A receipt authorizes only its original principal's exact retry; the
     # transaction still verifies the entire digest and current epoch.
@@ -106,6 +112,13 @@ def _owner_ref(authority, ref, params):
 async def mutate_session(authority, actor, ref, params):
     from gateway.session_runtime_workers import track_mutation
     authority._require_admission_open()
+    if params.get('operation') == 'response_ready':
+        if actor.profile_id != authority.profile_id or ref.profile_id != authority.profile_id:
+            raise RuntimeStoreError('profile_mismatch')
+        if params.get('session_id') != ref.session_id:
+            raise RuntimeStoreError('invalid_params')
+        ref = _owner_ref(authority, ref, params)
+        params = {**params, 'session_id': ref.session_id}
     # A request socket can disappear while its writer is inside to_thread. The owner task keeps
     # the session gate until commit AND publication finish, and retirement joins that same task.
     task = track_mutation(authority, _owned_mutation(authority, actor, ref, params))

@@ -181,9 +181,22 @@ to the current enrollment and starts off again if it needs to be replaced. Turni
 applies to queued deliveries and retries. The gateway waits briefly for a reserved preview attempt
 before confirming the change. A timeout leaves that attempt uncertain, and an alert already dispatched
 may still show a preview. Ambiguous hidden markup, media paths and overlong source text use a generic alert.
+
+The chat header has a **Response ready** policy for that conversation. **Inherit** uses the default
+of **Off**. **On** sends only to the eligible installation that originally submitted the turn.
+It can apply to an active turn when enabled before settlement and that turn already has an eligible
+target. Turning the policy off cancels queued alerts and retries for the conversation. Turning it
+back on leaves those entries cancelled. An attempt already in progress may still produce an alert.
+The assistant's `response_ready_here` action can read or set this policy in an authorized,
+in-process local turn. Editor MCP turns, delegated agents and managed workers omit this action.
+
+On upgrade, existing conversations start at **Inherit (off)**. Existing device enrollment, the
+device-wide switch and preview consent survive the upgrade. The earlier device-local **Response
+ready** preference is no longer used for conversations on this gateway. Choose **On** for each
+conversation that should send alerts.
+
 Delivery is best effort and an alert already
-accepted by the push provider may still appear after disabling. Turning off **Response ready**
-revokes this profile. Turning off **Enable notifications** revokes this installation across the
+accepted by the push provider may still appear after disabling. Turning off **Enable notifications** revokes this installation across the
 serving gateway, including profiles that are temporarily unavailable, and unsubscribes in the browser.
 If a send is already underway, the gateway waits briefly before confirming. A timeout leaves that
 send uncertain even though future deliveries were revoked. A repair action is available when the browser

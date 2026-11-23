@@ -576,7 +576,11 @@ class AuthorityConnection:
         if set(params) != {'session_id'}:
             raise RuntimeStoreError('invalid_params')
         await self.authority.resolve(self.actor, ref)
-        return await snapshot_info(self.authority, ref)
+        info = await snapshot_info(self.authority, ref)
+        from gateway.web_push.conversation import owns_policy, snapshot
+        if owns_policy(self.authority, ref, self.actor.subject):
+            info['response_ready_policy'] = await asyncio.to_thread(snapshot, self.authority, ref)
+        return info
 
     async def list_sessions(self, ref, params):
         if 'session:read' not in self.actor.capabilities:

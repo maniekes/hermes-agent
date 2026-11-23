@@ -460,7 +460,10 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
       acknowledgeBrowserPush(event.admission_id, event.profile)
     }
 
-    if (!browser || (!usesPush && ownTurnId && payload?.status === 'complete')) {
+    const managedResponseReady = payload?.response_ready_managed === true &&
+      (!event.connectionId || event.connectionId === LOCAL_CONNECTION_ID)
+
+    if (!browser || (!managedResponseReady && !usesPush && ownTurnId && payload?.status === 'complete')) {
       const notification = {
         body: turnDoneNotificationBody(finalText, translateNow('notifications.native.turnDoneBody')),
         sessionId,

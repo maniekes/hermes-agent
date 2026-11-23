@@ -131,6 +131,7 @@ class GatewayDashboardMount:
         webapp = getattr(self._state, "webapp", None)
         if not getattr(webapp, "web_push", False) or not web.app.state.auth_required:
             return
+        self.runner.web_push_policy_enabled = True
         from gateway.web_push.delivery import WebPush
         from hermes_cli.browser_credential import generation
 

@@ -5,6 +5,7 @@ import { browserApi, browserBootstrap } from '@/lib/browser-transport'
 export interface WebPushStatus {
   active: boolean
   available: boolean
+  conversationPolicy?: boolean
   legacyBackend?: boolean
   publicKey?: string
   preview?: boolean

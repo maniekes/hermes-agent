@@ -6,6 +6,7 @@ export interface NotificationSettingsTranslations {
   enableAllDesc: string
   focusedHint: string
   webPushPreview: { label: string; description: string }
+  webPushPolicy: { title: string; inherit: string; on: string; off: string; failed: string }
   kinds: Record<
     'approval' | 'backgroundDone' | 'credits' | 'input' | 'plugin' | 'turnDone' | 'turnError',
     { label: string; description: string }

@@ -75,6 +75,7 @@ import { type DroppedFile, partitionDroppedFiles } from './hooks/use-composer-ac
 import { useFileDropZone } from './hooks/use-file-drop-zone'
 import { shouldShowIntro } from './intro-visibility'
 import { ProfileTag } from './profile-tag'
+import { ConversationResponseReadyPolicy } from './response-ready-policy'
 import { ResumeExhaustedOverlay } from './resume-exhausted-overlay'
 import { isRouteSessionMismatch } from './route-session-state'
 import { useRuntimeMessageRepository } from './runtime-repository'
@@ -128,6 +129,7 @@ interface ChatViewProps extends Omit<React.ComponentProps<'div'>, 'onSubmit'> {
 interface ChatHeaderProps {
   activeSessionId: null | string
   isRoutedSessionView: boolean
+  routeMatchesRuntime: boolean
   onDeleteSelectedSession: () => void
   onToggleSelectedPin: () => void
   selectedSessionId: null | string
@@ -136,6 +138,7 @@ interface ChatHeaderProps {
 function ChatHeader({
   activeSessionId,
   isRoutedSessionView,
+  routeMatchesRuntime,
   onDeleteSelectedSession,
   onToggleSelectedPin,
   selectedSessionId
@@ -194,6 +197,7 @@ function ChatHeader({
         >
           <TitleMenuTrigger>{title}</TitleMenuTrigger>
         </SessionActionsMenu>
+        {activeSessionId && routeMatchesRuntime && <ConversationResponseReadyPolicy sessionId={activeSessionId} />}
       </div>
     </header>
   )
@@ -770,6 +774,7 @@ const ChatViewContent = memo(function ChatViewContent({
           isRoutedSessionView={isRoutedSessionView}
           onDeleteSelectedSession={onDeleteSelectedSession}
           onToggleSelectedPin={onToggleSelectedPin}
+          routeMatchesRuntime={!routeSessionMismatch}
           selectedSessionId={selectedSessionId}
         />
       )}

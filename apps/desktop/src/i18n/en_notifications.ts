@@ -4,6 +4,13 @@ export const enNotifications = {
   intro: 'OS notifications (not in-app toasts). Per device.',
   enableAll: 'Enable notifications',
   enableAllDesc: 'Off silences every notification below.',
+  webPushPolicy: {
+    title: 'Response ready',
+    inherit: 'Inherit (off)',
+    on: 'On',
+    off: 'Off',
+    failed: 'The conversation notification policy could not be saved.'
+  },
   webPushPreview: {
     label: 'Show message previews',
     description: 'Include the conversation title and part of the final reply on this device’s lock screen. Off shows a generic alert.'

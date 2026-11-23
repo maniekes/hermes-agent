@@ -20,6 +20,7 @@ from hermes_state_runtime import (
 def db(tmp_path):
     database = SessionDB(tmp_path / "state.db")
     database.create_session("chat", source="test")
+    database._execute_write(lambda conn: conn.execute("UPDATE sessions SET response_ready='on' WHERE id='chat'"))
     assert begin_runtime_epoch(database, instance_id="first") == 1
     yield database
     database.close()

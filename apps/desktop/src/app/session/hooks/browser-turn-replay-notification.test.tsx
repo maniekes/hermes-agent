@@ -174,6 +174,7 @@ class Socket extends EventTarget {
 }
 
 interface Scenario {
+  policyManaged?: boolean
   name: string
   chat: 'new' | 'cold' | 'warm'
   replay?: 'pending' | 'settled'
@@ -226,6 +227,7 @@ const scenarios: Scenario[] = [
   { name: 'foreground chat tile', chat: 'cold', tile: true, foreground: true, expected: 0 },
   { name: 'two distinct local turns within one second', chat: 'cold', twoTurns: true, expected: 1 },
   { name: 'failed local turn', chat: 'cold', failed: true, expected: 0 },
+  { name: 'managed response ready without a target', chat: 'new', policyManaged: true, expected: 0 },
   { name: 'new chat assigned to Web Push', chat: 'new', push: true, expected: 0 },
   { name: 'existing chat assigned to Web Push during replay', chat: 'warm', replay: 'pending', push: true, expected: 0 },
   { name: 'completion under Settings overlay', chat: 'cold', foreground: true, covered: true, push: true, expected: 0 },
@@ -517,6 +519,7 @@ it.each(scenarios)('dispatches $expected response-ready alerts for $name', async
       status,
       text: 'Example answer',
       web_push: scenario.push,
+      response_ready_managed: scenario.policyManaged,
       persisted_turn: {
         // Exercise the bound-admission fallback for an edit completion without a submission ID.
         ...(scenario.rewind === 'edit'

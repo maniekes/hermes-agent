@@ -4,6 +4,13 @@ export const frNotifications = {
   intro: "Notifications système (pas les toasts de l'application). Par appareil.",
   enableAll: 'Activer les notifications',
   enableAllDesc: 'Désactivé coupe toutes les notifications ci-dessous.',
+  webPushPolicy: {
+    title: 'Réponse prête',
+    inherit: 'Hériter (désactivé)',
+    on: 'Activé',
+    off: 'Désactivé',
+    failed: 'Le réglage des notifications de cette conversation n’a pas pu être enregistré.'
+  },
   webPushPreview: {
     label: 'Afficher les aperçus des messages',
     description: 'Affiche le titre de la conversation et une partie de la réponse finale sur l’écran verrouillé de cet appareil. Si cette option est désactivée, seule une alerte générique s’affiche.'

@@ -4,6 +4,13 @@ export const zhNotifications = {
   intro: '原生桌面通知，区别于应用内提示。设置按设备保存，每台电脑各自独立。',
   enableAll: '启用通知',
   enableAllDesc: '关闭后静音下方所有通知。',
+  webPushPolicy: {
+    title: '回复已就绪',
+    inherit: '继承（关闭）',
+    on: '开启',
+    off: '关闭',
+    failed: '无法保存此对话的通知设置。'
+  },
   webPushPreview: {
     label: '显示消息预览',
     description: '在此设备的锁屏上显示对话标题和最终回复的一部分。关闭后只显示通用通知。'

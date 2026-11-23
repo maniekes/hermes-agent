@@ -342,7 +342,8 @@ export function NotificationsSettings({ subpage }: NotificationsSettingsProps = 
           {localBrowser && (pushStatus?.available || pushError) && (
             <ListRow
               action={(!pushStatus?.active || pushStatus.needsRepair) && (
-                <Button disabled={pushBusy || !prefs.enabled || (!prefs.kinds.turnDone && !pushStatus?.active)}
+                <Button disabled={pushBusy || !prefs.enabled ||
+                    (!pushStatus?.conversationPolicy && !prefs.kinds.turnDone && !pushStatus?.active)}
                   onClick={() => void setupPush()} size="sm" type="button" variant="outline">
                   {pushStatus?.needsRepair || pushError ? pushCopy.repair : pushCopy.enable}
                 </Button>
@@ -363,7 +364,7 @@ export function NotificationsSettings({ subpage }: NotificationsSettingsProps = 
             />
           )}
 
-          {NATIVE_NOTIFICATION_KINDS.map(kind => (
+          {NATIVE_NOTIFICATION_KINDS.filter(kind => kind !== 'turnDone' || !pushStatus?.conversationPolicy).map(kind => (
             <ToggleRow
               checked={prefs.enabled && (prefs.kinds[kind] || (kind === 'turnDone' && pushStatus?.active === true))}
               description={copy.kinds[kind].description}

@@ -10461,6 +10461,17 @@
             "title": "Desktop Protocol",
             "type": "string"
           },
+          "response_ready_policy": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ResponseReadyPolicy"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
           "profile_name": {
             "title": "Profile Name",
             "type": "string"
@@ -24562,6 +24573,18 @@
             ],
             "default": null,
             "title": "Web Push"
+          },
+          "response_ready_managed": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Response Ready Managed"
           }
         },
         "title": "MessageCompletePayload",
@@ -35010,6 +35033,46 @@
         "title": "RequestCancelPayload",
         "type": "object"
       },
+      "ResponseReadyPolicy": {
+        "additionalProperties": true,
+        "properties": {
+          "mode": {
+            "enum": [
+              "inherit",
+              "on",
+              "off"
+            ],
+            "title": "Mode",
+            "type": "string"
+          },
+          "effective": {
+            "enum": [
+              "on",
+              "off"
+            ],
+            "title": "Effective",
+            "type": "string"
+          },
+          "revision": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Revision"
+          }
+        },
+        "required": [
+          "mode",
+          "effective"
+        ],
+        "title": "ResponseReadyPolicy",
+        "type": "object"
+      },
       "ResumePhaseStatus": {
         "enum": [
           "loading",
@@ -39992,6 +40055,17 @@
             ],
             "default": null,
             "title": "Revision"
+          },
+          "response_ready_policy": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ResponseReadyPolicy"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           }
         },
         "required": [
@@ -51036,7 +51110,7 @@
     },
     {
       "name": "session.mutate",
-      "summary": "Revision-fenced, retry-idempotent session edit (rename, archive, sidebar, branch, delete, rewind, reset, model, reasoning, workspace, edit_policy, compress, import).",
+      "summary": "Revision-fenced, retry-idempotent session edit (rename, archive, sidebar, branch, delete, rewind, reset, model, reasoning, workspace, edit_policy, response_ready, compress, import).",
       "params": [
         {
           "name": "params",

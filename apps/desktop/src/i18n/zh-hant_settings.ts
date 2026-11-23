@@ -215,6 +215,13 @@ export const zhHantSettings = {
       intro: '原生桌面通知，與應用程式內提示不同。設定會依裝置保存，每台電腦各自獨立。',
       enableAll: '啟用通知',
       enableAllDesc: '關閉後靜音下方所有通知。',
+      webPushPolicy: {
+        title: '回覆已就緒',
+        inherit: '繼承（關閉）',
+        on: '開啟',
+        off: '關閉',
+        failed: '無法儲存此對話的通知設定。'
+      },
       webPushPreview: {
         label: '顯示訊息預覽',
         description: '在此裝置的鎖定畫面顯示對話標題和部分最終回覆。關閉後只顯示一般通知。'

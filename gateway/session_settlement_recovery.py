@@ -116,6 +116,11 @@ def _publish_completion(authority, live, ref, row, settled, response, captured):
     except Exception:
         logger.exception('Terminal control cleanup failed for admission %s', row['admission_id'])
     complete = completion_payload(row, settled, response, captured)
+    from gateway.web_push.conversation import manages_response_ready
+    if manages_response_ready(authority.runner):
+        from gateway.config import Platform
+        if live.source is not None and live.source.platform == Platform.LOCAL:
+            complete['response_ready_managed'] = True
     notice = owner_stop_notice(captured, settled['outcome'], row)
     if notice and not complete.get('warning'):
         # ``warning`` is the slot every surface already renders on message.complete (Ink activity

@@ -253,12 +253,12 @@ class WebPush:
                     raise PreviewSendUnconfirmed()
         return saved
 
-    def _reserve_preview(self, authority, row):
+    def _reserve_dispatch(self, authority, row, preview):
         # An opt-out writes before joining this boundary. It either wins the fresh
         # read or waits for this reserved attempt before acknowledging.
         with self._dispatch, authority.db._read_ctx() as conn:
             allowed = store.dispatch_preview(conn, row)
-            if allowed:
+            if allowed and preview is not None:
                 self._sending_preview = (authority.profile_id, row["device"])
             return allowed
 
@@ -331,8 +331,6 @@ class WebPush:
         try:
             with authority.db._read_ctx() as conn:
                 allowed = store.dispatch_preview(conn, row)
-                if allowed is None:
-                    return
                 source = store.preview_source(conn, row) if allowed and row["session_id"] else None
             preview = None
             if source is not None:
@@ -341,12 +339,14 @@ class WebPush:
                 preview = make_preview(source["title"], source["answer"])
                 with authority.db._read_ctx() as conn:
                     allowed = store.dispatch_preview(conn, row)
-                if allowed and preview is not None:
-                    allowed = self._reserve_preview(authority, row)
-                if allowed is None:
-                    return
                 if not allowed:
                     preview = None
+            allowed = self._reserve_dispatch(authority, row, preview) if allowed is not None else None
+            if allowed is None:
+                authority.db._execute_write(lambda conn: store.finish(conn, row, None))
+                return
+            if not allowed:
+                preview = None
             remaining = int(row["expires_at"] - time.time())
             status, retry = self._send(profile, row, remaining, subscription, preview) if remaining > 0 else (400, None)
         except OSError:

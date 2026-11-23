@@ -48,10 +48,11 @@ class _Claim:
         return policy
 
 
-def active_toolset():
+def active_toolset(authority=None, session_id=None):
     claim = _grant.get()
     if (claim is not None and claim.active and current_session_tool_scope() == _SCOPE
-            and not is_delegated_child_context()):
+            and not is_delegated_child_context()
+            and (authority is None or (claim.authority is authority and claim.ref.session_id == session_id))):
         return _TOOLSET
     return None
 

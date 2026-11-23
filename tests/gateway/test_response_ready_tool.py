@@ -24,6 +24,7 @@ async def test_response_ready_tool_is_current_owned_and_fenced(tmp_path, monkeyp
     from gateway.session_ingress import _admission_scope, execute_admission
     from gateway.session_local import create_local_session
     from gateway.session_local_recovery import local_adapter
+    from gateway.session_mutations import mutate_session
     from model_tools import get_tool_definitions, handle_function_call
     from tools.registry import registry, session_tool_scope
 
@@ -73,6 +74,7 @@ async def test_response_ready_tool_is_current_owned_and_fenced(tmp_path, monkeyp
         assert 'error' in invoke(mode='on', session_id=sibling.session_id)
         assert 'error' in invoke(mode='on', profile_id='foreign', owner='foreign')
         assert invoke(mode='on') == {'mode': 'on', 'effective': 'on'}
+        assert definitions() == schemas
         assert invoke() == {'mode': 'on', 'effective': 'on'}
         assert json.loads(handle_function_call(
             'tool_call', {'name': TOOL, 'arguments': {}}, enabled_toolsets=[TOOLSET])
@@ -102,6 +104,12 @@ async def test_response_ready_tool_is_current_owned_and_fenced(tmp_path, monkeyp
 
     for actor in (replace(owner, capabilities=caps - {'session:control'}),
                   replace(owner, subject='foreign', capabilities=caps | {'session:operator'})):
+        with pytest.raises(RuntimeStoreError, match='permission_denied'):
+            await mutate_session(authority, actor, ref, {
+                'session_id': ref.session_id, 'request_id': 'ui-denied',
+                'expected_revision': authority.db.get_session(ref.session_id)['runtime_revision'],
+                'operation': 'response_ready', 'payload': {'mode': 'off'},
+            })
         denied = await claim(actor, 'denied-' + actor.subject)
         async with scope(denied):
             assert not definitions()

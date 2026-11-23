@@ -4,6 +4,13 @@ export const esNotifications = {
   intro: 'Notificaciones del sistema operativo (no avisos dentro de la app). Por dispositivo.',
   enableAll: 'Activar notificaciones',
   enableAllDesc: 'Desactivado silencia todas las notificaciones siguientes.',
+  webPushPolicy: {
+    title: 'Respuesta lista',
+    inherit: 'Heredar (desactivado)',
+    on: 'Activado',
+    off: 'Desactivado',
+    failed: 'No se pudo guardar la configuración de avisos de esta conversación.'
+  },
   webPushPreview: {
     label: 'Mostrar vistas previas',
     description: 'Incluye el título de la conversación y parte de la respuesta final en la pantalla de bloqueo de este dispositivo. Si se desactiva, muestra un aviso genérico.'

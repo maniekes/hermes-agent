@@ -8,6 +8,11 @@ METADATA_FIELDS = {'title': str, 'archived': bool, 'hidden': bool, 'pinned': boo
 def validate_action(operation, payload):
     if not isinstance(payload, dict) or not isinstance(operation, str):
         raise RuntimeStoreError('invalid_params')
+    if operation == 'response_ready':
+        from gateway.web_push.conversation import MODES
+        if set(payload) == {'mode'} and isinstance(payload['mode'], str) and payload['mode'] in MODES:
+            return
+        raise RuntimeStoreError('invalid_params')
     # ``confirm``: the owner's selection-guard token for this exact resolved target (session_mutation_model).
     # ``reasoning``: a level picked with the model, committed in the same selection.
     if (operation == 'model' and 'model' in payload and not set(payload) - {'model', 'provider', 'confirm', 'reasoning'}
@@ -87,6 +92,10 @@ def _valid_compress_payload(payload):
 
 
 def apply_action(db, conn, session_id, operation, payload, *, prepared=None):
+    if operation == 'response_ready':
+        from gateway.web_push.conversation import change_policy
+        owner, policy = change_policy(conn, session_id, payload['mode'])
+        return {owner}, {'response_ready_policy': policy}
     if operation == 'compress':
         from hermes_state_mutation_compress import compress_in_transaction
         return compress_in_transaction(db, conn, session_id, payload, prepared)

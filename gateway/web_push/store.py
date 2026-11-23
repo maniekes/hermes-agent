@@ -173,6 +173,11 @@ def annotate(conn, row):
 def settled(conn, row, outcome):
     if outcome != "completed":
         return
+    if not conn.execute("SELECT 1 FROM web_push_outbox WHERE id=?", (row["admission_id"],)).fetchone():
+        return
+    from gateway.web_push.conversation import turn_alert_allowed
+    if not turn_alert_allowed(conn, row["target_session_id"]):
+        return
     now = time.time()
     conn.execute(
         """UPDATE web_push_outbox SET session_id=?, due_at=?, expires_at=?
@@ -236,6 +241,9 @@ def prune(conn, now):
 
 
 def dispatch_preview(conn, row):
+    from gateway.web_push.conversation import turn_alert_allowed
+    if not turn_alert_allowed(conn, row["session_id"]):
+        return None
     current = conn.execute(
         """SELECT s.preview FROM web_push_outbox q JOIN web_push_subscriptions s
            ON q.device=s.device AND q.version=s.version

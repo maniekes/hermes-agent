@@ -5,7 +5,7 @@ import { MemoryRouter } from 'react-router'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
 import { browserPushStatus, disableBrowserPush, enableBrowserPush, setBrowserPushPreview, testBrowserPush } from '@/lib/browser-web-push'
-import { sendTestNativeNotification, setNativeNotifyEnabled, setNativeNotifyKind } from '@/store/native-notifications'
+import { $nativeNotifyPrefs, sendTestNativeNotification, setNativeNotifyEnabled, setNativeNotifyKind } from '@/store/native-notifications'
 import { notify } from '@/store/notifications'
 
 import { NotificationsSettings } from './notifications-settings'
@@ -219,6 +219,22 @@ it('does not silently accept a profile opt-out when an existing feature returns 
   await act(async () => { fireEvent.click(screen.getByRole('switch', { name: 'Response ready' })) })
   expect(setNativeNotifyKind).not.toHaveBeenCalled()
   expect(notify).toHaveBeenLastCalledWith({ kind: 'error', message: expect.stringMatching(/could not be saved/i) })
+})
+
+it('allows device enrollment when the legacy response-ready preference is off', async () => {
+  const saved = $nativeNotifyPrefs.get()
+  $nativeNotifyPrefs.set({ ...saved, kinds: { ...saved.kinds, turnDone: false } })
+  vi.mocked(browserPushStatus).mockResolvedValue({ active: false, available: true, conversationPolicy: true, publicKey: 'public' })
+
+  try {
+    renderAlerts()
+    const setup = await screen.findByRole<HTMLButtonElement>('button', { name: 'Set up on this device' })
+    expect(setup.disabled).toBe(false)
+    expect(screen.queryByRole('switch', { name: 'Response ready' })).toBeNull()
+    expect(screen.getByRole('switch', { name: 'Enable notifications' })).toBeTruthy()
+  } finally {
+    $nativeNotifyPrefs.set(saved)
+  }
 })
 
 it('shows only server-confirmed preview consent and preserves it on a failed update', async () => {

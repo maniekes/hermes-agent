@@ -301,6 +301,7 @@ class MessageCompletePayload(Payload):
     partial: bool | None = None
     persisted_turn: PersistedTurn | None = None
     web_push: bool | None = None
+    response_ready_managed: bool | None = None
 
 
 event("message.complete", MessageCompletePayload, doc="The turn ended: final text, usage and outcome.")

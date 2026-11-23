@@ -4832,6 +4832,13 @@ export interface SessionMutateResult {
   session_id: string
   operation: string
   revision?: number | null
+  response_ready_policy?: ResponseReadyPolicy | null
+  [key: string]: unknown
+}
+export interface ResponseReadyPolicy {
+  mode: 'inherit' | 'on' | 'off'
+  effective: 'on' | 'off'
+  revision?: number | null
   [key: string]: unknown
 }
 /** Exactly one of ``filters`` (``SessionDB.prune_sessions`` keyword filters, as ``hermes sessions prune`` builds them) or ``never_active_days`` (``--never-active``). */
@@ -4880,6 +4887,7 @@ export interface CanonicalSessionInfo {
   lazy: boolean
   profile_id: string
   desktop_protocol: string
+  response_ready_policy?: ResponseReadyPolicy | null
   profile_name: string
   cwd?: string | null
   edit_approval_policy?: 'ask' | 'workspace_session' | 'session' | null
@@ -5986,6 +5994,7 @@ export interface MessageCompletePayload {
   partial?: boolean | null
   persisted_turn?: PersistedTurn | null
   web_push?: boolean | null
+  response_ready_managed?: boolean | null
 }
 /** ``prompt_turn._result_status``. */
 export type TurnStatus = 'complete' | 'error' | 'interrupted'
@@ -7213,7 +7222,7 @@ export interface CanonicalRpcMethods {
   'session.info': { params: CanonicalSessionInfoParams; result: CanonicalSessionInfo }
   'session.interrupt': { params: CanonicalControlParams; result: CanonicalSessionHandle }
   'session.list': { params: CanonicalListParams; result: CanonicalListResult }
-  /** Revision-fenced, retry-idempotent session edit (rename, archive, sidebar, branch, delete, rewind, reset, model, reasoning, workspace, edit_policy, compress, import). */
+  /** Revision-fenced, retry-idempotent session edit (rename, archive, sidebar, branch, delete, rewind, reset, model, reasoning, workspace, edit_policy, response_ready, compress, import). */
   'session.mutate': { params: SessionMutateParams; result: SessionMutateResult }
   /** Local operator only: the owner deletes the ended sessions `hermes sessions prune` selected, skipping busy sessions and retained reset owners. */
   'session.prune': { params: SessionPruneParams; result: SessionPruneResult }

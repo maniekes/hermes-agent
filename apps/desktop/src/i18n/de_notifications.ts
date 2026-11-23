@@ -4,6 +4,13 @@ export const deNotifications = {
   intro: 'OS-Benachrichtigungen (keine In-App-Toasts). Pro Gerät.',
   enableAll: 'Benachrichtigungen aktivieren',
   enableAllDesc: 'Aus schaltet jede Benachrichtigung unten stumm.',
+  webPushPolicy: {
+    title: 'Antwort fertig',
+    inherit: 'Erben (aus)',
+    on: 'An',
+    off: 'Aus',
+    failed: 'Die Benachrichtigungseinstellung für dieses Gespräch konnte nicht gespeichert werden.'
+  },
   webPushPreview: {
     label: 'Nachrichtenvorschau anzeigen',
     description: 'Zeigt auf dem Sperrbildschirm dieses Geräts den Gesprächstitel und einen Teil der endgültigen Antwort. Aus zeigt eine allgemeine Benachrichtigung.'

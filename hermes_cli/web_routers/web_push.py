@@ -120,10 +120,12 @@ async def _read_body(request):
 async def push_status(request: Request, profile: str | None = None):
     push, authority, device, owner, login = _context(request, profile)
     if push is None or authority is None:
+        if getattr(getattr(request.app.state, "gateway_runner", None), "web_push_policy_enabled", False):
+            return _response(available=False, active=False, conversationPolicy=True)
         return _response(available=False, active=False)
 
     active = await run_in_threadpool(push.active, authority, device, owner, login)
-    return _response(available=True, active=active is not None, publicKey=push.public_key,
+    return _response(available=True, active=active is not None, publicKey=push.public_key, conversationPolicy=True,
                      **({"preview": bool(active["preview"])} if active is not None else {}))
 
 

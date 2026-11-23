@@ -228,6 +228,7 @@ def test_real_socket_first_admission_survives_disconnect_and_other_device_retry(
     assert _enroll(browser, desktop_endpoint, device=DESKTOP, profile="beta").status_code == 200
     created = _socket_request(browser, PHONE, "session.create", {"request_id": "webpush-review-create", "model": "gpt-4o-mini", "source": "gui"})
     sid = created["session_id"]
+    _response_ready_policy(browser, sid, "on")
     prompt = {"session_id": sid, "submission_id": "webpush-review-submit", "text": "test response"}
     first = _socket_request(browser, PHONE, "prompt.submit", prompt)
     retry = _socket_request(browser, DESKTOP, "prompt.submit", prompt)
@@ -445,6 +446,7 @@ def _preview_turn(fixture, monkeypatch, answer, *, title=None, profile="beta", r
     created = _socket_request(browser, PHONE, "session.create",
                               {"request_id": request_id + "-create", "model": "gpt-4o-mini", "source": "gui"}, profile)
     sid = created["session_id"]
+    _response_ready_policy(browser, sid, "on", profile=profile)
     if title is not None:
         assert authority.db.set_session_title(sid, title)
     receipt = _socket_request(browser, PHONE, "prompt.submit",
@@ -546,3 +548,77 @@ def test_existing_enrollment_migrates_private_and_generic_cancels_queued_preview
     assert _act(browser, "privacy", "beta", {"preview": False}).status_code == 200
     assert push.deliver_one(authority, "beta", generation())
     assert "preview" not in fixture.sends[-1][1]
+
+
+def _response_ready_policy(browser, sid, mode=None, *, profile="beta"):
+    info = _socket_request(browser, PHONE, "session.info", {"session_id": sid}, profile)
+    current = info["response_ready_policy"]
+    if mode is None:
+        return current
+    result = _socket_request(browser, PHONE, "session.mutate", {
+        "session_id": sid, "request_id": "response-ready-" + str(current["revision"]),
+        "expected_revision": current["revision"], "operation": "response_ready", "payload": {"mode": mode},
+    }, profile)
+    return result["response_ready_policy"]
+
+
+def test_conversation_policy_defaults_off_and_on_uses_only_an_existing_admission_target(
+        fixture, endpoint, monkeypatch):
+    from hermes_state_runtime import claim_session_input, settle_session_input
+
+    browser, beta, push = fixture.browser, fixture.beta, fixture.runner.web_push
+    monkeypatch.setattr(beta, "_schedule_admitted", lambda *_: None)
+    assert _enroll(browser, endpoint, profile="beta").status_code == 200
+    sid = _socket_request(browser, PHONE, "session.create",
+                          {"request_id": "policy-target", "model": "gpt-4o-mini", "source": "gui"})["session_id"]
+    assert _response_ready_policy(browser, sid)["mode"] == "inherit"
+    assert _response_ready_policy(browser, sid)["effective"] == "off"
+
+    def submit(device, request):
+        return _socket_request(browser, device, "prompt.submit",
+                               {"session_id": sid, "submission_id": request, "text": "synthetic"})["admission_id"]
+
+    def settle(admission, started=None):
+        started = started or claim_session_input(beta.db, epoch=beta.epoch, session_id=sid)
+        assert started["admission_id"] == admission
+        settle_session_input(beta.db, epoch=beta.epoch, admission_id=admission,
+                             generation=started["generation"], outcome="completed")
+        _due_now(beta)
+
+    settle(submit(PHONE, "off"))
+    assert not push.deliver_one(beta, "beta", generation())
+    no_target = submit(DESKTOP, "no-target")
+    assert _response_ready_policy(browser, sid, "on")["effective"] == "on"
+    settle(no_target)
+    assert not push.deliver_one(beta, "beta", generation())
+
+    assert _response_ready_policy(browser, sid, "off")["effective"] == "off"
+    original = submit(PHONE, "original")
+    started = claim_session_input(beta.db, epoch=beta.epoch, session_id=sid)
+    assert _response_ready_policy(browser, sid, "on")["effective"] == "on"
+    assert submit(DESKTOP, "original") == original
+    settle(original, started)
+    assert push.deliver_one(beta, "beta", generation())
+    assert fixture.sends == [(endpoint, {"kind": "turn", "id": original, "session": sid, "profile": "beta"})]
+
+    queued = submit(PHONE, "cancel-pending")
+    settle(queued)
+    _response_ready_policy(browser, sid, "off")
+    _response_ready_policy(browser, sid, "on")
+    assert not push.deliver_one(beta, "beta", generation())
+    assert len(fixture.sends) == 1
+
+    attempts = []
+    monkeypatch.setattr(push, "send", lambda *_args, **_kwargs: (
+        attempts.append(True) or SimpleNamespace(status_code=503, headers={})))
+    settle(submit(PHONE, "cancel-retry"))
+    assert push.deliver_one(beta, "beta", generation())
+    _response_ready_policy(browser, sid, "inherit")
+    assert _response_ready_policy(browser, sid)["effective"] == "off"
+    _response_ready_policy(browser, sid, "on")
+    _due_now(beta)
+    assert not push.deliver_one(beta, "beta", generation())
+    assert attempts == [True]
+    assert _act(browser, "disable-all", "beta").json() == {"applied": True}
+    settle(submit(PHONE, "master-disabled"))
+    assert not push.deliver_one(beta, "beta", generation())
