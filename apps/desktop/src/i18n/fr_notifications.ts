@@ -4,6 +4,10 @@ export const frNotifications = {
   intro: "Notifications système (pas les toasts de l'application). Par appareil.",
   enableAll: 'Activer les notifications',
   enableAllDesc: 'Désactivé coupe toutes les notifications ci-dessous.',
+  webPushPreview: {
+    label: 'Afficher les aperçus des messages',
+    description: 'Affiche le titre de la conversation et une partie de la réponse finale sur l’écran verrouillé de cet appareil. Si cette option est désactivée, seule une alerte générique s’affiche.'
+  },
   focusedHint: 'Les alertes de fin ne se déclenchent que quand Hermes est en arrière-plan.',
   kinds: {
     approval: {

@@ -4,6 +4,10 @@ export const jaNotifications = {
   intro: 'アプリ内トーストとは別の、ネイティブのデスクトップ通知です。設定は端末ごとに保存されます。',
   enableAll: '通知を有効にする',
   enableAllDesc: 'オフで以下の通知をすべて無効にします。',
+  webPushPreview: {
+    label: 'メッセージのプレビューを表示',
+    description: 'この端末のロック画面に会話のタイトルと最終回答の一部を表示します。オフにすると一般的な通知を表示します。'
+  },
   focusedHint: '完了通知は Hermes がバックグラウンドにあるときのみ表示されます。',
   kinds: {
     approval: {

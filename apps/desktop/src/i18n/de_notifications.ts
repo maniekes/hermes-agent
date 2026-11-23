@@ -4,6 +4,10 @@ export const deNotifications = {
   intro: 'OS-Benachrichtigungen (keine In-App-Toasts). Pro Gerät.',
   enableAll: 'Benachrichtigungen aktivieren',
   enableAllDesc: 'Aus schaltet jede Benachrichtigung unten stumm.',
+  webPushPreview: {
+    label: 'Nachrichtenvorschau anzeigen',
+    description: 'Zeigt auf dem Sperrbildschirm dieses Geräts den Gesprächstitel und einen Teil der endgültigen Antwort. Aus zeigt eine allgemeine Benachrichtigung.'
+  },
   focusedHint: 'Abschluss-Alerts feuern nur, während Hermes im Hintergrund ist.',
   kinds: {
     approval: {

@@ -356,9 +356,9 @@ export function NotificationsSettings({ subpage }: NotificationsSettingsProps = 
           {pushStatus?.active && typeof pushStatus.preview === 'boolean' && (
             <ToggleRow
               checked={pushStatus.preview}
-              description={pushCopy.previewDescription ?? enNotifications.webPush.previewDescription}
+              description={copy.webPushPreview.description}
               disabled={pushBusy}
-              label={pushCopy.preview ?? enNotifications.webPush.preview}
+              label={copy.webPushPreview.label}
               onChange={preview => void changePreview(preview)}
             />
           )}

@@ -5,6 +5,7 @@ export interface NotificationSettingsTranslations {
   enableAll: string
   enableAllDesc: string
   focusedHint: string
+  webPushPreview: { label: string; description: string }
   kinds: Record<
     'approval' | 'backgroundDone' | 'credits' | 'input' | 'plugin' | 'turnDone' | 'turnError',
     { label: string; description: string }
@@ -21,8 +22,6 @@ export interface NotificationSettingsTranslations {
     repair: string
     setup: string
     active: string
-    preview?: string
-    previewDescription?: string
     unavailable: string
     failed: string
     queued: string
