@@ -177,8 +177,10 @@ completion may race this check. Chrome displays each received Push using the dev
 The alert has generic text and
 opens the conversation after sign-in if necessary. Delivery is best effort and an alert already
 accepted by the push provider may still appear after disabling. Turning off **Response ready**
-revokes this profile. Turning off **Enable notifications** revokes this installation on all currently
-served profiles and unsubscribes in the browser. A repair action is available when the browser
+revokes this profile. Turning off **Enable notifications** revokes this installation across the
+serving gateway, including profiles that are temporarily unavailable, and unsubscribes in the browser.
+If a send is already underway, the gateway waits briefly before confirming. A timeout leaves that
+send uncertain even though future deliveries were revoked. A repair action is available when the browser
 registration or application key changes.
 
 To enable the backend, install the locked extra with `hermes pm install --extra web-push`, or
@@ -195,7 +197,8 @@ The backend sends outgoing TLS to Chrome's FCM Web Push endpoint. No Firebase pr
 Deploy with the same origin and keep VAPID and storage keys stable across restarts. Key rotation,
 origin changes, browser storage reset and global `hermes webapp --sign-out` require re-enrollment.
 An ordinary cookie expiry leaves enrollment in place so an alert can reopen through sign-in.
-For a shared device, turn off notifications before signing out. The new tables are additive.
+Signing out explicitly in the Webapp revokes that browser installation and allows the next user
+to enroll. Rotating the storage key also requires re-enrollment. The new tables are additive.
 For rollback, turn off `webapp.web_push` and deploy the prior backend and matching Webapp.
 Disable browser enrollments before rolling forward again if old subscriptions should be discarded.
 

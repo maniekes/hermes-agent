@@ -2,6 +2,7 @@ import { LOCAL_CONNECTION_ID } from '@hermes/shared'
 
 import type { DesktopOauthLoginOptions, HermesApiRequest, HermesConnection } from '@/global'
 import { webappSignInRequired } from '@/lib/browser-launch-session'
+import { PUSH_INSTALLATION_HEADER, pushInstallation } from '@/lib/browser-push-installation'
 import { signInSavedConnection, signOutSavedConnection } from '@/lib/browser-saved-connection-oauth'
 import type { BrowserSavedConnections } from '@/lib/browser-saved-connections'
 import { createServedProfiles, SERVED_SET_READ_TIMEOUT_MS, UnservedProfileError } from '@/lib/browser-served-profiles'
@@ -378,8 +379,11 @@ export function createBrowserConnectionBridge({
           : { connected: false, error: 'Only this gateway can be signed out here.', ok: false }
       }
 
+      const installation = bootstrap.authRequired ? pushInstallation(bootstrap.basePath) : undefined
+
       const response = await fetch(endpointUrl('/auth/logout', bootstrap.basePath), {
         credentials: 'same-origin',
+        headers: installation ? { [PUSH_INSTALLATION_HEADER]: installation } : undefined,
         method: 'POST'
       })
 

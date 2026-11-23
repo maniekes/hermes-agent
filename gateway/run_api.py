@@ -134,7 +134,10 @@ class GatewayDashboardMount:
         from gateway.web_push.delivery import WebPush
         from hermes_cli.browser_credential import generation
 
-        push = await asyncio.to_thread(WebPush.from_home, webapp.home)
+        authority = getattr(self.runner, "session_authority", None)
+        if authority is None:
+            return
+        push = await asyncio.to_thread(WebPush.from_home, webapp.home, authority.db)
         if push is not None and not self._closed:
             self.runner.web_push = push
             self._push_task = asyncio.create_task(push.run(self.runner, self._push_stop, generation),

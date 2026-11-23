@@ -126,6 +126,8 @@ afterEach(() => {
 
   setPrimaryGateway(null)
   delete window.document.documentElement.dataset.hermesDesktopHost
+  window.document.querySelector('[data-overlay-surface]')?.remove()
+  window.history.replaceState(null, '', '/')
   vi.unstubAllGlobals()
   vi.restoreAllMocks()
   __resetNativeNotifyBaselineForTests()
@@ -184,6 +186,7 @@ interface Scenario {
   twoTurns?: boolean
   failed?: boolean
   push?: boolean
+  covered?: boolean
   expected: number
 }
 
@@ -225,6 +228,7 @@ const scenarios: Scenario[] = [
   { name: 'failed local turn', chat: 'cold', failed: true, expected: 0 },
   { name: 'new chat assigned to Web Push', chat: 'new', push: true, expected: 0 },
   { name: 'existing chat assigned to Web Push during replay', chat: 'warm', replay: 'pending', push: true, expected: 0 },
+  { name: 'completion under Settings overlay', chat: 'cold', foreground: true, covered: true, push: true, expected: 0 },
   { name: 'foreground chat assigned to Web Push', chat: 'cold', foreground: true, push: true, expected: 0 },
   { name: 'regeneration assigned to Web Push', chat: 'cold', rewind: 'regenerate', push: true, expected: 0 },
   { name: 'edit assigned to Web Push', chat: 'cold', rewind: 'edit', push: true, expected: 0 }
@@ -523,6 +527,14 @@ it.each(scenarios)('dispatches $expected response-ready alerts for $name', async
       }
     } satisfies NonNullable<GatewayEvent<'message.complete'>['payload']>
 
+    if (scenario.covered) {
+      const surface = window.document.createElement('div')
+      surface.dataset.overlaySurface = ''
+      window.document.body.append(surface)
+      window.history.replaceState(null, '', '/#/settings?tab=notifications')
+      expect($focusedRuntimeId.get()).toBe(sessionId)
+    }
+
     const completion: GatewayEvent<'message.complete'> = { ...stamp, type: 'message.complete', seq: 4, payload }
 
     act(() => {
@@ -565,7 +577,8 @@ it.each(scenarios)('dispatches $expected response-ready alerts for $name', async
       scenario.replay === 'pending' && !isNew
     )
     expect(notify).toHaveBeenCalledTimes(scenario.expected)
-    if (scenario.push && scenario.foreground) {
+
+    if (scenario.push && scenario.foreground && !scenario.covered) {
       expect(acknowledgeBrowserPush.mock.calls.map(([id]) => id)).toEqual([admissionId])
     } else {
       expect(acknowledgeBrowserPush).not.toHaveBeenCalled()

@@ -112,12 +112,21 @@ export function NotificationsSettings({ subpage }: NotificationsSettingsProps = 
     }
 
     let current = true
-    void browserPushStatus(profile).then(
-      status => { if (current) { setPushState({ scope: pushScope, status }) } },
-      () => { if (current) { setPushState({ failed: true, scope: pushScope }) } }
-    )
 
-    return () => { current = false }
+    const refresh = () => {
+      void browserPushStatus(profile).then(
+        status => { if (current) { setPushState({ scope: pushScope, status }) } },
+        () => { if (current) { setPushState({ failed: true, scope: pushScope }) } }
+      )
+    }
+
+    refresh()
+    window.addEventListener('focus', refresh)
+
+    return () => {
+      current = false
+      window.removeEventListener('focus', refresh)
+    }
   }, [localBrowser, profile, pushScope, showAlerts])
 
   const changeResponsePreference = async (on: boolean, master: boolean) => {
@@ -131,8 +140,19 @@ export function NotificationsSettings({ subpage }: NotificationsSettingsProps = 
           setPushState({ scope: pushScope, status: { ...pushStatus, active: false, needsRepair: false } })
         }
       } catch (error) {
-        if (!(error instanceof Error && error.message.startsWith('404:') && !pushStatus?.available)) {
-          notify({ kind: 'error', message: pushCopy.failed })
+        const methodMissing = error instanceof Error && /^(404|405):/.test(error.message)
+
+        const unsupported = methodMissing &&
+          (pushStatus ?? await browserPushStatus(master ? null : profile).catch(() => undefined))?.available === false
+
+        if (!unsupported) {
+          const pending = error instanceof Error && (error.message.startsWith('503:') || error.name === 'AbortError')
+
+          if (pending) {
+            setPushState({ failed: true, scope: pushScope })
+          }
+
+          notify({ kind: 'error', message: pending ? pushCopy.revocationPending : pushCopy.failed })
 
           return
         }
@@ -181,15 +201,23 @@ export function NotificationsSettings({ subpage }: NotificationsSettingsProps = 
         const status = pushStatus ?? await browserPushStatus(profile)
 
         if (status.available) {
-          if (!status.active || status.needsRepair || !await testBrowserPush(profile)) {
+          if (!status.active || status.needsRepair) {
             throw new Error('Web Push test unavailable')
           }
 
-          notify({ kind: 'info', message: pushCopy.queued })
+          const result = await testBrowserPush(profile)
+
+          if (result === 'inactive') {
+            throw new Error('Web Push subscription inactive')
+          }
+
+          notify({ kind: 'info', message: result === 'recent' ? pushCopy.recent : pushCopy.queued })
 
           return
         }
       } catch {
+        const status = await browserPushStatus(profile).catch(() => undefined)
+        setPushState({ failed: !status, scope: pushScope, status })
         notify({ kind: 'error', message: copy.testFailed })
 
         return
@@ -262,7 +290,7 @@ export function NotificationsSettings({ subpage }: NotificationsSettingsProps = 
               action={(!pushStatus?.active || pushStatus.needsRepair) && (
                 <Button disabled={pushBusy || !prefs.enabled || (!prefs.kinds.turnDone && !pushStatus?.active)}
                   onClick={() => void setupPush()} size="sm" type="button" variant="outline">
-                  {pushStatus?.active || pushError ? pushCopy.repair : pushCopy.enable}
+                  {pushStatus?.needsRepair || pushError ? pushCopy.repair : pushCopy.enable}
                 </Button>
               )}
               description={pushError ? pushCopy.unavailable :
@@ -354,7 +382,7 @@ export function NotificationsSettings({ subpage }: NotificationsSettingsProps = 
             <Bell />
             {copy.test}
           </Button>
-          <Caption>{pushStatus?.active ? pushCopy.active : copy.focusedHint}</Caption>
+          <Caption>{pushStatus?.active && !pushStatus.needsRepair ? pushCopy.active : copy.focusedHint}</Caption>
         </div>
       )}
     </SettingsContent>

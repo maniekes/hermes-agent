@@ -229,7 +229,7 @@ async def replace_queued(connection, ref, params):
         admitted = await authority.submit(actor, request, queue_while_restarting=connection._operator is True,
                                           _authorize_write=partial(retire_replaced_input, admission_id=old_id, binding=binding),
                                           _replay_guard=partial(check_replaced_input, admission_id=old_id, binding=binding),
-                                          _web_push_binding=connection.web_push_binding())
+                                          _web_push_binding=await connection.web_push_binding())
     finally:
         old = get_session_admission(authority.db, admission_id=old_id)
         if old_id in authority.cancel_obligations and (old['status'], old['outcome']) == ('terminal', 'cancelled'):

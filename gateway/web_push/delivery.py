@@ -2,6 +2,7 @@
 import asyncio
 import base64
 from email.utils import parsedate_to_datetime
+from functools import partial
 import hashlib
 import hmac
 from http.client import HTTPSConnection
@@ -15,6 +16,7 @@ import socket
 import ssl
 import stat
 import time
+from threading import Condition
 from types import SimpleNamespace
 
 from gateway.web_push import store
@@ -40,7 +42,8 @@ def endpoint_route(endpoint):
 
 
 def _key(value, size):
-    if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9_-]{%d}" % ((size * 8 + 5) // 6), value):
+    if (not isinstance(value, str) or len(value) != (size * 8 + 5) // 6
+            or not re.fullmatch(r"[A-Za-z0-9_-]+", value)):
         raise ValueError("Invalid Web Push key")
     raw = base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
     if len(raw) != size or _b64(raw) != value:
@@ -134,7 +137,7 @@ def _read_credentials(path):
 
 
 class WebPush:
-    def __init__(self, credentials, send=None):
+    def __init__(self, credentials, send=None, *, control_db=None):
         from cryptography.hazmat.primitives import serialization
         from cryptography.hazmat.primitives.ciphers.aead import AESGCM
         from py_vapid import Vapid
@@ -143,42 +146,104 @@ class WebPush:
         self.signer = Vapid.from_pem(credentials["vapid_private_key"].encode("ascii"))
         self.public_key = _b64(self.signer.public_key.public_bytes(
             serialization.Encoding.X962, serialization.PublicFormat.UncompressedPoint))
-        self.vapid_id = hashlib.sha256(self.public_key.encode()).hexdigest()
         self.contact = credentials["contact"]
         if not re.fullmatch(r"mailto:[^@\s]{1,100}@[^@\s]{1,100}", self.contact):
             raise ValueError("Invalid Web Push contact")
         self.storage_secret = _key(credentials["storage_key"], 32)
+        self.vapid_id = hmac.digest(self.storage_secret, self.public_key.encode(), "sha256").hex()
+        self.control_db = control_db
+        self._dispatch = Condition()
+        self._sending = None
         self.cipher = AESGCM(self.storage_secret)
         self.send = send or webpush
 
     @classmethod
-    def from_home(cls, home):
+    def from_home(cls, home, control_db=None):
         try:
-            return cls(_read_credentials(home / "webapp" / "web-push.json"))
+            return cls(_read_credentials(home / "webapp" / "web-push.json"), control_db=control_db)
         except (ImportError, OSError, ValueError, TypeError, KeyError, AttributeError):
             logger.warning("Webapp push unavailable: check the web-push extra and private credentials")
             return None
 
     def register(self, authority, device, owner, login, value):
         subscription = normalize_subscription(value)
-        encoded = json.dumps(subscription, sort_keys=True, separators=(",", ":")).encode()
+        control = self.control_db or authority.db
+        grant = control._execute_write(lambda conn: store.enroll_device(conn, device, owner))
+        if grant is None:
+            return None
+        encoded = self._encoded(subscription)
         fingerprint = hmac.digest(self.storage_secret, subscription["endpoint"].encode(), "sha256").hex()
         material = hmac.digest(self.storage_secret, encoded, "sha256").hex()
         nonce = secrets.token_bytes(12)
         sealed = nonce + self.cipher.encrypt(nonce, encoded, self._aad(authority, device))
         return authority.db._execute_write(lambda conn: store.subscribe(
-            conn, device, owner, login, self.vapid_id, fingerprint, sealed, time.time(), material=material))
+            conn, device, owner, login, self.vapid_id, fingerprint, sealed, time.time(), material=material, grant=grant))
+
+    @staticmethod
+    def _encoded(subscription):
+        return json.dumps(subscription, sort_keys=True, separators=(",", ":")).encode()
 
     @staticmethod
     def _aad(authority, device):
         return json.dumps([authority.profile_id, device]).encode()
 
-    def _send(self, authority, profile, row, remaining):
-        from pywebpush import WebPushException
+    def _open(self, authority, row):
+        from cryptography.exceptions import InvalidTag
 
         sealed = row["sealed"]
-        subscription = normalize_subscription(json.loads(
-            self.cipher.decrypt(sealed[:12], sealed[12:], self._aad(authority, row["device"]))))
+        try:
+            return normalize_subscription(json.loads(
+                self.cipher.decrypt(sealed[:12], sealed[12:], self._aad(authority, row["device"]))))
+        except (InvalidTag, ValueError, TypeError, RecursionError):
+            self._retire(authority, row)
+            return None
+
+    def _retire(self, authority, row):
+        authority.db._execute_write(lambda conn: store.retire(conn, row["device"], row["version"]))
+
+    def _device_grant(self, authority, device):
+        with (self.control_db or authority.db)._read_ctx() as conn:
+            return store.device_grant(conn, device)
+
+    def active(self, authority, device, owner, login):
+        current, grant = self._device_grant(authority, device)
+        if current != owner:
+            return None
+        with authority.db._read_ctx() as conn:
+            row = store.subscription(conn, device, owner, login, self.vapid_id, grant)
+        if row is not None and self._open(authority, row) is not None:
+            return row
+        return None
+
+    def matches(self, authority, device, owner, login, value):
+        encoded = self._encoded(normalize_subscription(value))
+        material = hmac.digest(self.storage_secret, encoded, "sha256").hex()
+        row = self.active(authority, device, owner, login)
+        return row is not None and hmac.compare_digest(row["material"], material)
+
+    def binding(self, authority, device, owner, login):
+        row = self.active(authority, device, owner, login)
+        if row is None:
+            return None
+        return partial(store.bind, device=device, owner=owner, login=login, vapid=self.vapid_id,
+                       grant=row["grant"], version=row["version"])
+
+    def test(self, authority, device, owner, login):
+        row = self.active(authority, device, owner, login)
+        if row is None:
+            return "inactive"
+        return authority.db._execute_write(lambda conn: store.test_delivery(
+            conn, device, owner, login, self.vapid_id, time.time(), grant=row["grant"], version=row["version"]))
+
+    def wait_for_dispatch(self, device):
+        # The caller has already persisted revocation. A sender that entered the dispatch
+        # section first must finish before we confirm; a later sender rechecks the grant.
+        with self._dispatch:
+            return self._dispatch.wait_for(lambda: self._sending != device, timeout=7)
+
+    def _send(self, profile, row, remaining, subscription):
+        from pywebpush import WebPushException
+
         host, _ = endpoint_route(subscription["endpoint"])
         payload = json.dumps({"kind": "turn" if row["session_id"] is not None else "test",
                               "id": row["id"], "session": row["session_id"], "profile": profile})
@@ -199,15 +264,30 @@ class WebPush:
         row = authority.db._execute_write(lambda conn: store.claim(conn, now))
         if row is None:
             return False
-        if row["vapid"] != self.vapid_id or row["login"] != login:
-            authority.db._execute_write(lambda conn: store.retire(conn, row["device"], row["version"]))
-            return True
+        with self._dispatch:
+            self._sending = row["device"]
+        try:
+            self._deliver_claim(authority, profile, login, row)
+        finally:
+            with self._dispatch:
+                self._sending = None
+                self._dispatch.notify_all()
+        return True
+
+    def _deliver_claim(self, authority, profile, login, row):
+        grant = self._device_grant(authority, row["device"])
+        if row["vapid"] != self.vapid_id or row["login"] != login or grant != (row["owner"], row["grant"]):
+            self._retire(authority, row)
+            return
+        subscription = self._open(authority, row)
+        if subscription is None:
+            return
         with authority.db._read_ctx() as conn:
             if not store.still_current(conn, row):
-                return True
+                return
         try:
             remaining = int(row["expires_at"] - time.time())
-            status, retry = self._send(authority, profile, row, remaining) if remaining > 0 else (400, None)
+            status, retry = self._send(profile, row, remaining, subscription) if remaining > 0 else (400, None)
         except OSError:
             status, retry = None, None
         except Exception:
@@ -215,11 +295,10 @@ class WebPush:
             status, retry = 400, None
             logger.warning("Web Push delivery failed to encode or complete")
         if status in (404, 410):
-            authority.db._execute_write(lambda conn: store.retire(conn, row["device"], row["version"]))
+            self._retire(authority, row)
         else:
             retry_time = retry_at(status, retry, row["attempts"], time.time(), row["expires_at"])
             authority.db._execute_write(lambda conn: store.finish(conn, row, retry_time))
-        return True
 
     async def run(self, runner, stopped, current_login):
         from gateway.session_authorities import local_bots

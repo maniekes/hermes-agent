@@ -24,6 +24,8 @@ export interface NotificationSettingsTranslations {
     unavailable: string
     failed: string
     queued: string
+    recent: string
+    revocationPending: string
     sound: string
   }
   test: string

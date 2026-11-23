@@ -4,6 +4,12 @@ from uuid import uuid4
 
 
 SCHEMA = """
+-- The serving gateway's primary database owns the installation grant.
+CREATE TABLE IF NOT EXISTS web_push_devices (
+    device TEXT PRIMARY KEY,
+    owner TEXT,
+    generation INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS web_push_subscriptions (
     device TEXT PRIMARY KEY,
     owner TEXT NOT NULL,
@@ -13,7 +19,8 @@ CREATE TABLE IF NOT EXISTS web_push_subscriptions (
     version TEXT NOT NULL,
     material TEXT NOT NULL,
     sealed BLOB NOT NULL,
-    updated_at REAL NOT NULL
+    updated_at REAL NOT NULL,
+    grant INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS web_push_outbox (
     id TEXT PRIMARY KEY,
@@ -31,30 +38,64 @@ GRACE_SECONDS = 3
 TTL_SECONDS = 3600
 
 
-def subscription(conn, device, owner, login, vapid):
+def device_grant(conn, device):
+    row = conn.execute("SELECT owner, generation FROM web_push_devices WHERE device=?", (device,)).fetchone()
+    return tuple(row) if row is not None else (None, 0)
+
+
+def enroll_device(conn, device, owner):
+    current, grant = device_grant(conn, device)
+    if current not in (None, owner):
+        return None
+    conn.execute("""INSERT INTO web_push_devices VALUES (?, ?, ?)
+                    ON CONFLICT(device) DO UPDATE SET owner=excluded.owner""", (device, owner, grant))
+    return grant
+
+
+def revoke_device(conn, device, owner):
+    current, grant = device_grant(conn, device)
+    if current not in (None, owner):
+        return False
+    conn.execute("""INSERT INTO web_push_devices VALUES (?, NULL, ?)
+                    ON CONFLICT(device) DO UPDATE SET owner=NULL, generation=excluded.generation""",
+                 (device, grant + 1))
+    local = conn.execute(
+        "SELECT version FROM web_push_subscriptions WHERE device=? AND owner=? AND grant<=?",
+        (device, owner, grant)).fetchone()
+    if local is not None:
+        retire(conn, device, local["version"])
+    return True
+
+
+def subscription(conn, device, owner, login, vapid, grant=0):
     return conn.execute(
         """SELECT * FROM web_push_subscriptions
-           WHERE device=? AND owner=? AND login=? AND vapid=?""",
-        (device, owner, login, vapid)).fetchone()
+           WHERE device=? AND owner=? AND login=? AND vapid=? AND grant=?""",
+        (device, owner, login, vapid, grant)).fetchone()
 
 
-def subscribe(conn, device, owner, login, vapid, endpoint, sealed, now, *, material=''):
+def subscribe(conn, device, owner, login, vapid, endpoint, sealed, now, *, material='', grant=0):
     current = conn.execute("SELECT * FROM web_push_subscriptions WHERE device=?", (device,)).fetchone()
-    if current is not None and current["owner"] != owner:
+    if current is not None and (current["grant"] > grant or (
+        current["grant"] == grant and current["owner"] != owner
+    )):
         return None
     occupied = conn.execute("SELECT device FROM web_push_subscriptions WHERE endpoint=?", (endpoint,)).fetchone()
     if occupied is not None and occupied["device"] != device:
         return None
     if current is not None:
-        same = (current["login"], current["vapid"], current["endpoint"], current["material"]) == (login, vapid, endpoint, material)
+        same = (current["login"], current["vapid"], current["endpoint"], current["material"], current["grant"]) == (
+            login, vapid, endpoint, material, grant)
         if same:
             conn.execute("UPDATE web_push_subscriptions SET sealed=?, updated_at=? WHERE device=?",
                          (sealed, now, device))
             return current["version"]
         retire(conn, device, current["version"])
     version = uuid4().hex
-    conn.execute("INSERT INTO web_push_subscriptions VALUES (?,?,?,?,?,?,?,?,?)",
-                 (device, owner, login, vapid, endpoint, version, material, sealed, now))
+    conn.execute("""INSERT INTO web_push_subscriptions
+                    (device,owner,login,vapid,endpoint,version,material,sealed,updated_at,grant)
+                    VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                 (device, owner, login, vapid, endpoint, version, material, sealed, now, grant))
     return version
 
 
@@ -74,9 +115,9 @@ def revoke(conn, device, owner, login):
     return True
 
 
-def bind(conn, admission, device, owner, login, vapid):
-    row = subscription(conn, device, owner, login, vapid)
-    if row is not None:
+def bind(conn, admission, device, owner, login, vapid, *, grant=0, version=None):
+    row = subscription(conn, device, owner, login, vapid, grant)
+    if row is not None and (version is None or row["version"] == version):
         conn.execute("INSERT INTO web_push_outbox(id,device,version) VALUES (?,?,?)",
                      (admission, device, row["version"]))
 
@@ -100,33 +141,33 @@ def settled(conn, row, outcome):
         (row["target_session_id"], now + GRACE_SECONDS, now + TTL_SECONDS, row["admission_id"]))
 
 
-def test_delivery(conn, device, owner, login, vapid, now):
-    row = subscription(conn, device, owner, login, vapid)
-    if row is None:
-        return False
+def test_delivery(conn, device, owner, login, vapid, now, *, grant=0, version=None):
+    row = subscription(conn, device, owner, login, vapid, grant)
+    if row is None or (version is not None and row["version"] != version):
+        return "inactive"
     prior = conn.execute(
         "SELECT due_at FROM web_push_outbox WHERE device=? AND version=? AND session_id IS NULL AND expires_at>?",
         (device, row["version"], now),
     ).fetchone()
     if prior is not None:
-        return prior["due_at"] is not None
+        return "queued" if prior["due_at"] is not None else "recent"
     conn.execute("INSERT INTO web_push_outbox(id,device,version,due_at,expires_at) VALUES (?,?,?,?,?)",
                  (uuid4().hex, device, row["version"], now, now + 30))
-    return True
+    return "queued"
 
 
 def seen(conn, event_id, device, owner, login):
     return conn.execute(
         """UPDATE web_push_outbox SET due_at=NULL
-           WHERE id=? AND device=? AND session_id IS NOT NULL AND attempts=0 AND due_at IS NOT NULL
+           WHERE id=? AND device=? AND session_id IS NOT NULL AND attempts=0 AND due_at>?
            AND EXISTS (SELECT 1 FROM web_push_subscriptions s
                        WHERE s.device=? AND s.version=web_push_outbox.version AND s.owner=? AND s.login=?)""",
-        (event_id, device, device, owner, login)).rowcount == 1
+        (event_id, device, time.time(), device, owner, login)).rowcount == 1
 
 
 def next_delivery(conn, now):
     return conn.execute(
-        """SELECT q.*, s.sealed, s.login, s.vapid FROM web_push_outbox q
+        """SELECT q.*, s.sealed, s.login, s.vapid, s.owner, s.grant FROM web_push_outbox q
            JOIN web_push_subscriptions s ON s.device=q.device AND s.version=q.version
            WHERE q.due_at<=? AND q.expires_at>? ORDER BY q.due_at LIMIT 1""", (now, now)).fetchone()
 

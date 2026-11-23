@@ -514,6 +514,10 @@ async def auth_password_login(request: Request, body: _PasswordLoginBody):
 
 @router.post("/auth/logout", name="auth_logout")
 async def auth_logout(request: Request):
+    if request.headers.get("x-hermes-push-installation"):
+        from hermes_cli.web_routers.web_push import revoke_on_logout
+
+        await revoke_on_logout(request)
     at, rt = read_session_cookies(request, webapp_sign_in.cookie_gateway(request))
     # Best-effort revoke on every provider; failures logged, never raised. The access token too:
     # a long-TTL one outlives the refresh token and its cookie.

@@ -57,6 +57,8 @@ export const enNotifications = {
     unavailable: 'Web Push status is unavailable. Reload Hermes or try again.',
     failed: 'Web Push settings could not be saved. Try again.',
     queued: 'Push test queued. Check this device for the notification.',
+    recent: 'A Push test finished recently. Wait a moment before sending another.',
+    revocationPending: 'A Push send may still be in progress. Retry to confirm disabling Web Push.',
     sound: 'Web Push sound follows this device’s notification settings.'
   },
   test: 'Send test notification',

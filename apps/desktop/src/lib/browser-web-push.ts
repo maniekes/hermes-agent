@@ -25,7 +25,7 @@ function request<T>(profile?: null | string, action?: string, body?: unknown) {
     method: action ? 'POST' : 'GET',
     path: action ? `${path}/${action}` : path,
     profile,
-    timeoutMs: 5000
+    timeoutMs: action?.startsWith('disable') ? 10000 : 5000
   }, { [PUSH_INSTALLATION_HEADER]: installation })
 }
 
@@ -42,13 +42,25 @@ export async function browserPushStatus(profile?: null | string): Promise<WebPus
     throw error
   }
 
-  if (status.active) {
-    const subscription = await existingBrowserSubscription()
-    status.needsRepair = !subscription || browserNotificationPermission() !== 'granted' ||
-      !status.publicKey || !sameKey(subscription, applicationKey(status.publicKey))
+  if (!status.available) {
+    return status
   }
 
-  return status
+  const subscription = await existingBrowserSubscription()
+
+  if (!status.active) {
+    return { ...status, needsRepair: Boolean(subscription) }
+  }
+
+  if (!subscription || browserNotificationPermission() !== 'granted' ||
+      !status.publicKey || !sameKey(subscription, applicationKey(status.publicKey))) {
+    return { ...status, active: false, needsRepair: true }
+  }
+
+  const check = await request<{ active: boolean }>(profile, 'check', subscription.toJSON())
+  const active = check?.active === true
+
+  return { ...status, active, needsRepair: !active }
 }
 
 function applicationKey(value: string): Uint8Array<ArrayBuffer> {
@@ -100,16 +112,24 @@ export async function enableBrowserPush(profile: null | string, publicKey: strin
 }
 
 export async function disableBrowserPush(profile: null | string, allProfiles = false) {
-  const result = await request(profile, allProfiles ? 'disable-all' : 'disable', {})
+  const result = await request<{ applied: boolean }>(profile, allProfiles ? 'disable-all' : 'disable', {})
 
-  if (result && allProfiles) {
+  if (result?.applied && allProfiles) {
     const subscription = await existingBrowserSubscription()
     await subscription?.unsubscribe()
   }
 }
 
 export async function testBrowserPush(profile: null | string) {
-  return (await request<{ applied: boolean }>(profile, 'test', {}))?.applied === true
+  try {
+    return (await request<{ applied: boolean }>(profile, 'test', {}))?.applied ? 'queued' : 'inactive'
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith('429:')) {
+      return 'recent'
+    }
+
+    throw error
+  }
 }
 
 export function acknowledgeBrowserPush(admissionId: string, profile?: string) {

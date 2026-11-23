@@ -215,7 +215,7 @@ async def test_listener_starts_and_stops_one_optional_sender(tmp_path, monkeypat
 
     monkeypatch.setattr(WebPush, "run", run)
     web = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(auth_required=True)))
-    runner = SimpleNamespace()
+    runner = SimpleNamespace(session_authority=SimpleNamespace(db=object()))
     off = GatewayDashboardMount(runner, SimpleNamespace(webapp=WebappMount(tmp_path, home)))
     await off._start_web_push(web)
     assert not hasattr(runner, "web_push")

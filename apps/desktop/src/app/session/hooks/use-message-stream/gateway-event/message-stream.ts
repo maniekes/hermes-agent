@@ -11,6 +11,7 @@ import { playCompletionSound } from '@/lib/completion-sound'
 import { parseErrorSurface } from '@/lib/error-surface'
 import { triggerHaptic } from '@/lib/haptics'
 import { hostHas } from '@/lib/host-capabilities'
+import { composerFocusBlockedBySurface } from '@/lib/keybinds/composer-focus-keys'
 import { turnDoneNotificationBody } from '@/lib/turn-done-notification-body'
 import { billingCtaLabel, clearBillingBlock, runBillingRecovery, setBillingBlock } from '@/store/billing-block'
 import { clearSettledClarifyRequest } from '@/store/clarify'
@@ -454,7 +455,8 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
     const usesPush = browser && payload?.web_push === true
 
     if (usesPush && ownTurnId && event.admission_id && payload?.status === 'complete' &&
-      (!event.connectionId || event.connectionId === LOCAL_CONNECTION_ID) && ctx.fromActiveSource() && !document.hidden && document.hasFocus() && $focusedRuntimeId.get() === sessionId) {
+      (!event.connectionId || event.connectionId === LOCAL_CONNECTION_ID) && ctx.fromActiveSource() && !document.hidden &&
+      document.hasFocus() && $focusedRuntimeId.get() === sessionId && !composerFocusBlockedBySurface()) {
       acknowledgeBrowserPush(event.admission_id, event.profile)
     }
 

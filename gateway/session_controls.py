@@ -808,20 +808,18 @@ class AuthorityConnection:
         # The interactive WS is the one surface a restart's after-turn wait admits (#139041).
         receipt = await self.authority.submit(self.actor, self.submission(ref, params),
                                               queue_while_restarting=self._operator is True,
-                                              _web_push_binding=self.web_push_binding())
+                                              _web_push_binding=await self.web_push_binding())
         return asdict(receipt)
 
-    def web_push_binding(self):
+    async def web_push_binding(self):
         device = self._identity.get("web_push_device")
         login = self._identity.get("web_push_login")
         push = getattr(self.authority.runner, "web_push", None)
         if device is None or login is None or push is None:
             return None
         from gateway.session_identity import authenticated_principal_digest
-        from gateway.web_push.store import bind
-
-        return partial(bind, device=device, owner=authenticated_principal_digest(self._identity),
-                       login=login, vapid=push.vapid_id)
+        return await asyncio.to_thread(push.binding, self.authority, device,
+                                       authenticated_principal_digest(self._identity), login)
 
     def _voice_stop_key(self, ref, params):
         request_id = params.get('submission_id') or params.get('input_id')
