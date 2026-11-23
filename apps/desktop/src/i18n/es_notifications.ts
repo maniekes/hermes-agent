@@ -38,6 +38,7 @@ export const esNotifications = {
   browserPermission: {
     title: 'Notificaciones del navegador',
     allow: 'Permitir',
+    requestFailed: 'El navegador no pudo solicitar permiso para las notificaciones. Revisa la configuración de este sitio.',
     states: {
       default:
         'Muestra avisos de este navegador mientras la pestaña está en segundo plano. Hasta que lo permitas, solo parpadea el título de la pestaña.',
@@ -54,6 +55,7 @@ export const esNotifications = {
   testSent:
     'Prueba enviada. Si no aparece nada, revisa los permisos de notificaciones del sistema operativo y el modo Concentración o No molestar.',
   testUnsupported: 'Este sistema no admite notificaciones nativas.',
+  testFailed: 'No se pudo enviar la notificación de prueba. Recarga Hermes e inténtalo de nuevo.',
   muteSoundsTitle: 'Silenciar sonidos de la interfaz',
   muteSoundsDesc:
     'Silencia los avisos automáticos de finalización, activación y reflexión, la respuesta háptica y los sonidos de las notificaciones del sistema. Las vistas previas de sonido y las respuestas habladas siguen reproduciéndose.',

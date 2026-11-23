@@ -32,9 +32,7 @@ import {
 } from '@/lib/generated-images'
 import { scheduleStreamWork } from '@/lib/stream-work-clock'
 import { isTodoToolName, nextTodosFromToolEvent, parseTodoRevision } from '@/lib/todos'
-import { turnDoneNotificationBody } from '@/lib/turn-done-notification-body'
 import type { ScopedServerRequest } from '@/store/gateway'
-import { dispatchNativeNotification } from '@/store/native-notifications'
 import { isDiskFullErrorMessage, notifyError } from '@/store/notifications'
 import { broadcastSessionsChanged } from '@/store/session-sync'
 import { registerStreamDeltaFlush } from '@/store/stream-delta-flush'
@@ -1185,12 +1183,6 @@ export function useMessageStream({
         void hydrateFromStoredSession(3, completedState.storedSessionId, sessionId)
       }
 
-      dispatchNativeNotification({
-        body: turnDoneNotificationBody(text, translateNow('notifications.native.turnDoneBody')),
-        kind: 'turnDone',
-        sessionId,
-        title: translateNow('notifications.native.turnDoneTitle')
-      })
     },
     [hydrateFromStoredSession, scheduleSessionsRefresh, updateSessionState]
   )

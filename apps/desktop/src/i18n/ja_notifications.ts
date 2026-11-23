@@ -38,6 +38,7 @@ export const jaNotifications = {
   browserPermission: {
     title: 'ブラウザー通知',
     allow: '許可',
+    requestFailed: 'ブラウザーが通知の許可を要求できませんでした。このサイトの通知設定を確認してください。',
     states: {
       default:
         'タブがバックグラウンドにある間、このブラウザーで通知を表示します。許可するまではタブのタイトルだけが点滅します。',
@@ -52,6 +53,7 @@ export const jaNotifications = {
   testBody: '通知は正常に動作しています。',
   testSent: 'テストを送信しました。表示されない場合は、OS の通知許可と集中モード／おやすみモードを確認してください。',
   testUnsupported: 'このシステムはネイティブ通知に対応していません。',
+  testFailed: 'テスト通知を送信できませんでした。Hermes を再読み込みして、もう一度お試しください。',
   muteSoundsTitle: 'インターフェース音をミュート',
   muteSoundsDesc:
     '完了・ウェイクワード・思考中の自動通知音、触覚フィードバック、OS 通知の音を無効にします。サウンドのプレビューと音声による応答は引き続き再生されます。',

@@ -36,9 +36,19 @@ function Caption({ children, className }: { children: ReactNode; className?: str
   return <p className={cn(CAPTION, className)}>{children}</p>
 }
 
+async function askPermissionFromSettings(failureMessage: string) {
+  try {
+    return await askBrowserNotificationPermission()
+  } catch {
+    refreshBrowserNotificationPermission()
+    notify({ kind: 'error', message: failureMessage })
+
+    return null
+  }
+}
+
 /** Webapp only: the browser's notification permission, asked from a click here
- *  or on Send test notification, never on page load. The tab title flashes
- *  whatever the answer. */
+ *  or on Send test notification, never on page load. */
 function BrowserPermissionRow() {
   const { t } = useI18n()
   const copy = t.settings.notifications.browserPermission
@@ -51,7 +61,7 @@ function BrowserPermissionRow() {
       action={
         permission === 'default' ? (
           <Button
-            onClick={() => void askBrowserNotificationPermission()}
+            onClick={() => void askPermissionFromSettings(copy.requestFailed)}
             size="sm"
             type="button"
             variant="outline"
@@ -85,12 +95,49 @@ export function NotificationsSettings({ subpage }: NotificationsSettingsProps = 
   const runTest = async () => {
     triggerHaptic('open')
 
-    if (hostHas('browserNotifications')) {
-      await askBrowserNotificationPermission()
+    const browser = hostHas('browserNotifications')
+
+    if (browser) {
+      const permission = await askPermissionFromSettings(copy.browserPermission.requestFailed)
+
+      if (!permission) {
+        return
+      }
+
+      if (permission !== 'granted') {
+        notify({ kind: 'error', message: copy.browserPermission.states[permission] })
+
+        return
+      }
     }
 
-    const ok = await sendTestNativeNotification(copy.testTitle, copy.testBody)
-    notify({ kind: ok ? 'info' : 'error', message: ok ? copy.testSent : copy.testUnsupported })
+    try {
+      if (await sendTestNativeNotification(copy.testTitle, copy.testBody)) {
+        notify({ kind: 'info', message: copy.testSent })
+
+        return
+      }
+    } catch {
+      // Recheck site permission below in case it changed during delivery.
+      if (!browser) {
+        notify({ kind: 'error', message: copy.testFailed })
+
+        return
+      }
+    }
+
+    if (!browser) {
+      notify({ kind: 'error', message: copy.testUnsupported })
+
+      return
+    }
+
+    refreshBrowserNotificationPermission()
+    const permission = $browserNotificationPermission.get()
+    notify({
+      kind: 'error',
+      message: permission === 'granted' ? copy.testFailed : copy.browserPermission.states[permission]
+    })
   }
 
   return (

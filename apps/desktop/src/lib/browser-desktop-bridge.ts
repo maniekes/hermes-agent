@@ -171,7 +171,13 @@ export function installBrowserDesktopBridge(): boolean {
 
       return { count: query && find?.call(window, query) ? 1 : 0 }
     },
-    notify: async payload => showBrowserNotification(payload),
+    notify: payload =>
+      showBrowserNotification(payload, {
+        basePath: bootstrap.basePath,
+        reopenProfile: activeConnectionId() === LOCAL_CONNECTION_ID && !bootstrap.privateSession
+          ? (currentProfile())
+          : null
+      }),
     onFocusSession: onBrowserFocusSession,
     openExternal,
     openPreviewInBrowser: async url => {

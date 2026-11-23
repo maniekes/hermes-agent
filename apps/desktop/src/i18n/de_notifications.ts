@@ -38,6 +38,7 @@ export const deNotifications = {
   browserPermission: {
     title: 'Browser-Benachrichtigungen',
     allow: 'Erlauben',
+    requestFailed: 'Der Browser konnte die Berechtigung für Benachrichtigungen nicht anfragen. Prüfe die Website-Einstellungen.',
     states: {
       default:
         'Hinweise dieses Browsers anzeigen, während der Tab im Hintergrund ist. Bis du es erlaubst, blinkt nur der Tab-Titel.',
@@ -53,6 +54,7 @@ export const deNotifications = {
   testSent:
     'Test gesendet. Wenn nichts erscheint, überprüfen Sie die Benachrichtigungsberechtigungen Ihres Betriebssystems und Fokus/Nicht stören.',
   testUnsupported: 'Dieses System unterstützt keine nativen Benachrichtigungen.',
+  testFailed: 'Die Testbenachrichtigung konnte nicht gesendet werden. Lade Hermes neu und versuche es erneut.',
   muteSoundsTitle: 'Oberflächentöne stummschalten',
   muteSoundsDesc:
     'Schaltet automatische Abschluss-, Aktivierungs- und Denktöne, haptisches Feedback und die Töne von Systembenachrichtigungen aus. Klangvorschauen und gesprochene Antworten werden weiterhin abgespielt.',

@@ -38,6 +38,7 @@ export const zhNotifications = {
   browserPermission: {
     title: '浏览器通知',
     allow: '允许',
+    requestFailed: '浏览器无法请求通知权限。请检查此网站的通知设置。',
     states: {
       default: '标签页在后台时由此浏览器显示提醒。在你允许之前,只有标签页标题会闪烁。',
       granted: '已允许。此标签页在后台时会显示提醒,标签页标题也会闪烁。',
@@ -51,6 +52,7 @@ export const zhNotifications = {
   testBody: '通知工作正常。',
   testSent: '测试已发送。如果没有出现，请检查系统通知权限和专注模式／勿扰模式。',
   testUnsupported: '此系统不支持原生通知。',
+  testFailed: '测试通知发送失败。请重新加载 Hermes 后重试。',
   muteSoundsTitle: '静音界面提示音',
   muteSoundsDesc: '关闭自动完成、唤醒词和思考提示音、触感反馈以及系统通知声音。声音预览和语音回复仍会播放。',
   completionSoundTitle: '完成提示音',

@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const { refreshSupportedSessionControlAfterTurn } = vi.hoisted(() => ({
   refreshSupportedSessionControlAfterTurn: vi.fn(async () => undefined)
@@ -9,6 +9,7 @@ vi.mock('@/store/session-control', () => ({ refreshSupportedSessionControlAfterT
 import type { GatewayEventName } from '@hermes/shared'
 
 import { CanonicalDesktopProtocol } from '@/api/canonical-protocol'
+import { bindBrowserNotificationAdmission, trackBrowserNotificationTurn } from '@/lib/browser-notification-turns'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { $activeGatewayProfile } from '@/store/profile'
 import {
@@ -17,6 +18,7 @@ import {
   $selectedStoredSessionId,
   $sessions,
   $unreadFinishedSessionIds,
+  setActiveSessionId,
   setSelectedStoredSessionId
 } from '@/store/session'
 import { $sessionStates, publishSessionState } from '@/store/session-states'
@@ -211,5 +213,66 @@ describe('unread dot for a messaging turn Desktop sent', () => {
     publishSessionState('rt-tg', { ...createClientSessionState('tg-1'), busy: true })
     publishSessionState('rt-tg', { ...createClientSessionState('tg-1'), busy: false })
     expect($unreadFinishedSessionIds.get()).not.toContain('tg-1')
+  })
+})
+
+describe('Webapp response-ready notification', () => {
+  const notify = vi.fn(async () => true)
+  let sequence = 0
+  let runtimeId: string
+
+  beforeEach(() => {
+    notify.mockClear()
+    vi.stubGlobal('hermesDesktop', { notify })
+    document.documentElement.dataset.hermesDesktopHost = 'browser'
+    vi.spyOn(document, 'hidden', 'get').mockReturnValue(true)
+    runtimeId = `notification-runtime-${++sequence}`
+    setActiveSessionId(runtimeId)
+  })
+
+  afterEach(() => {
+    delete document.documentElement.dataset.hermesDesktopHost
+    vi.unstubAllGlobals()
+    vi.restoreAllMocks()
+    setActiveSessionId(null)
+  })
+
+  function complete(inputId?: string, options?: { admissionId?: string; replayed?: boolean; status?: string }) {
+    const ctx = context('message.complete')
+    ctx.sessionId = runtimeId
+    ctx.event = { type: 'message.complete', admission_id: options?.admissionId, replayed: options?.replayed }
+    ctx.payload = {
+      text: 'The response',
+      status: options?.status ?? 'complete',
+      ...(inputId && { persisted_turn: { complete: true, row_ids: [], submission_id: inputId } })
+    }
+    handleMessageStreamEvent(ctx)
+  }
+
+  it('alerts only for the sending page’s turn, once, even when completion beats the submit receipt', () => {
+    complete('another-device')
+    trackBrowserNotificationTurn('from-this-client')
+    complete('from-this-client')
+    complete('from-this-client')
+
+    expect(notify).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ kind: 'turnDone', sessionId: runtimeId }))
+  })
+
+  it('uses a matching admission when the terminal frame has no persisted receipt', () => {
+    trackBrowserNotificationTurn('submitted')
+    bindBrowserNotificationAdmission('submitted', 'matching-admission')
+    complete(undefined, { admissionId: 'other-admission' })
+    complete(undefined, { admissionId: 'matching-admission' })
+
+    expect(notify).toHaveBeenCalledOnce()
+  })
+
+  it('suppresses replayed and interrupted completions', () => {
+    trackBrowserNotificationTurn('prior-turn')
+    trackBrowserNotificationTurn('interrupted-turn')
+    complete('prior-turn', { replayed: true })
+    complete('interrupted-turn', { status: 'interrupted' })
+
+    expect(notify).not.toHaveBeenCalled()
   })
 })

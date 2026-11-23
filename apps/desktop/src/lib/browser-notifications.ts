@@ -1,12 +1,6 @@
 /**
- * The Webapp's half of `hermesDesktop.notify`: what Electron's notification IPC
- * does in main, done with the browser's Notification API.
- *
- * Permission is asked only from a click in Settings (browsers ignore or
- * penalise prompts that no gesture started), so an event arriving before the
- * user opted in shows nothing here and the tab-title flash carries it alone.
- * The API needs a secure context: Tailscale serve (https) and localhost have
- * it, a plain-http LAN address does not.
+ * Browser half of hermesDesktop.notify. Ask permission only from Settings.
+ * The tab title can still flash when the OS notification is unavailable.
  */
 
 import { flagTabAttention } from '@/store/browser-tab-attention'
@@ -22,7 +16,9 @@ export function browserNotificationPermission(): BrowserNotificationPermission {
     return 'insecure'
   }
 
-  return 'Notification' in window ? Notification.permission : 'unsupported'
+  return typeof Notification !== 'undefined' && typeof Notification.permission === 'string'
+    ? Notification.permission
+    : 'unsupported'
 }
 
 /** Call from a click handler only. */
@@ -37,12 +33,36 @@ export async function requestBrowserNotificationPermission(): Promise<BrowserNot
 type FocusSessionListener = (sessionId: string) => void
 
 const focusSessionListeners = new Set<FocusSessionListener>()
+const WORKER_FILE = 'hermes-notifications-sw.js'
+const NOTIFICATION_TIMEOUT_MS = 5000
+let notificationWorkerUrl: string | undefined
 
-/** Same contract as Electron's `onFocusSession`: a notification click names the session to open. */
+/** Same click contract as Electron's onFocusSession. */
 export function onBrowserFocusSession(callback: FocusSessionListener): () => void {
-  focusSessionListeners.add(callback)
+  const serviceWorker = navigator.serviceWorker
 
-  return () => focusSessionListeners.delete(callback)
+  const onWorkerClick = (event: MessageEvent) => {
+    const source = event.source
+
+    if (
+      source &&
+      'scriptURL' in source &&
+      source.scriptURL === notificationWorkerUrl &&
+      event.data?.type === 'hermes:focus-session' &&
+      typeof event.data.sessionId === 'string' &&
+      event.data.sessionId
+    ) {
+      callback(event.data.sessionId)
+    }
+  }
+
+  focusSessionListeners.add(callback)
+  serviceWorker?.addEventListener('message', onWorkerClick)
+
+  return () => {
+    focusSessionListeners.delete(callback)
+    serviceWorker?.removeEventListener('message', onWorkerClick)
+  }
 }
 
 export interface BrowserNotifyPayload {
@@ -50,12 +70,122 @@ export interface BrowserNotifyPayload {
   focusSessionId?: string
   kind?: string
   sessionId?: string
+  silent?: boolean
   tag?: string
   title?: string
 }
 
-/** Flash the tab, then show a browser notification when the user allowed it. */
-export function showBrowserNotification(payload: BrowserNotifyPayload): boolean {
+interface BrowserNotificationContext {
+  basePath: string
+  /** Only provide a profile when a fresh window can route back to this gateway. */
+  reopenProfile?: null | string
+}
+
+async function activeNotificationWorker(registration: ServiceWorkerRegistration): Promise<ServiceWorker> {
+  const worker = registration.active ?? registration.installing ?? registration.waiting
+
+  if (!worker || worker.state === 'redundant') {
+    throw new Error('Notification service worker is unavailable')
+  }
+
+  if (worker.state === 'activated') {
+    return worker
+  }
+
+  return new Promise((resolve, reject) => {
+    const finish = (error?: Error) => {
+      clearTimeout(timer)
+      worker.removeEventListener('statechange', onStateChange)
+
+      if (error) {
+        reject(error)
+      } else {
+        resolve(worker)
+      }
+    }
+
+    const onStateChange = () => {
+      if (worker.state === 'activated') {
+        finish()
+      } else if (worker.state === 'redundant') {
+        finish(new Error('Notification service worker failed to activate'))
+      }
+    }
+
+    const timer = setTimeout(
+      () => finish(new Error('Notification service worker activation timed out')),
+      NOTIFICATION_TIMEOUT_MS
+    )
+
+    worker.addEventListener('statechange', onStateChange)
+    onStateChange()
+  })
+}
+
+async function showWorkerNotification(
+  serviceWorker: ServiceWorkerContainer,
+  title: string,
+  options: NotificationOptions,
+  sessionId: string | undefined,
+  reopenSessionId: string | undefined,
+  { basePath, reopenProfile }: BrowserNotificationContext
+): Promise<boolean> {
+  const root = new URL(`${basePath}/`, window.location.origin)
+  const script = new URL(WORKER_FILE, root).href
+  notificationWorkerUrl = script
+
+  // Give the worker its own scope so it cannot take over the app's navigation
+  // or replace a registration for the installed app.
+  const registration = await serviceWorker.register(script, {
+    scope: new URL('hermes-notifications/', root).href
+  })
+
+  const worker = await activeNotificationWorker(registration)
+
+  return new Promise((resolve, reject) => {
+    const { port1, port2 } = new MessageChannel()
+
+    const finish = (error?: Error) => {
+      clearTimeout(timer)
+      port1.close()
+      port2.close()
+
+      if (error) {
+        reject(error)
+      } else {
+        resolve(true)
+      }
+    }
+
+    const timer = setTimeout(
+      () => finish(new Error('Notification service worker did not respond')),
+      NOTIFICATION_TIMEOUT_MS
+    )
+
+    port1.onmessage = ({ data }) => {
+      finish(
+        data?.ok === true
+          ? undefined
+          : new Error(`Notification service worker failed (${data?.error ?? 'unknown error'})`)
+      )
+    }
+
+    try {
+      worker.postMessage(
+        { type: 'hermes:show-notification', title, options, sessionId, reopenSessionId, reopenProfile },
+        [port2]
+      )
+    } catch (error) {
+      finish(error instanceof Error ? error : new Error(String(error)))
+    }
+  })
+}
+
+/** Report permission barriers as false and propagate failures to the bridge caller. */
+export async function showBrowserNotification(
+  payload: BrowserNotifyPayload,
+  context: BrowserNotificationContext = { basePath: '' }
+): Promise<boolean> {
   const title = payload.title || 'Hermes'
 
   flagTabAttention(title)
@@ -66,14 +196,29 @@ export function showBrowserNotification(payload: BrowserNotifyPayload): boolean 
 
   const focusSessionId = payload.focusSessionId || payload.sessionId
 
-  const notification = new Notification(title, {
+  const options: NotificationOptions = {
     body: payload.body,
-    // One OS entry per session+kind: a replayed event replaces, never stacks.
+    silent: payload.silent,
     tag: `hermes:${payload.kind ?? ''}:${focusSessionId ?? payload.tag ?? ''}`
-  })
+  }
+
+  let notification: Notification
+
+  try {
+    notification = new Notification(title, options)
+  } catch (error) {
+    // Android exposes Notification.permission but throws from its constructor.
+    // Fall back only before anything was shown, so a failure cannot double-send.
+    const serviceWorker = navigator.serviceWorker
+
+    if (!(error instanceof TypeError) || !serviceWorker) {
+      throw error
+    }
+
+    return showWorkerNotification(serviceWorker, title, options, focusSessionId, payload.focusSessionId, context)
+  }
 
   notification.onclick = () => {
-    // A click on our own notification is the user's request to come back.
     window.focus()
     notification.close()
 
@@ -82,5 +227,25 @@ export function showBrowserNotification(payload: BrowserNotifyPayload): boolean 
     }
   }
 
-  return true
+  return new Promise((resolve, reject) => {
+    const finish = (error?: Error) => {
+      clearTimeout(timer)
+      notification.onshow = null
+      notification.onerror = null
+
+      if (error) {
+        reject(error)
+      } else {
+        resolve(true)
+      }
+    }
+
+    const timer = setTimeout(
+      () => finish(new Error('Browser notification did not report delivery')),
+      NOTIFICATION_TIMEOUT_MS
+    )
+
+    notification.onshow = () => finish()
+    notification.onerror = () => finish(new Error('Browser notification failed to show'))
+  })
 }

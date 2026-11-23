@@ -38,6 +38,7 @@ export const frNotifications = {
   browserPermission: {
     title: 'Notifications du navigateur',
     allow: 'Autoriser',
+    requestFailed: 'Le navigateur n’a pas pu demander l’autorisation d’afficher des notifications. Vérifiez les paramètres de ce site.',
     states: {
       default:
         "Affiche des alertes de ce navigateur quand l'onglet est en arrière-plan. Tant que vous ne l'autorisez pas, seul le titre de l'onglet clignote.",
@@ -54,6 +55,7 @@ export const frNotifications = {
   testSent:
     "Test envoyé. Si rien n'apparaît, vérifiez les autorisations de notification de votre système et le mode Ne pas déranger.",
   testUnsupported: 'Ce système ne prend pas en charge les notifications natives.',
+  testFailed: 'La notification de test n’a pas pu être envoyée. Rechargez Hermes et réessayez.',
   muteSoundsTitle: 'Couper les sons de l’interface',
   muteSoundsDesc:
     'Coupe les signaux automatiques de fin, d’activation et de réflexion, le retour haptique et les sons des notifications système. Les aperçus sonores et les réponses vocales restent audibles.',

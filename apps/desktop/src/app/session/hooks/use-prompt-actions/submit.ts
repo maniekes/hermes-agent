@@ -3,9 +3,11 @@ import { type MutableRefObject, useCallback } from 'react'
 
 import { getSession, PROMPT_SUBMIT_REQUEST_TIMEOUT_MS } from '@/hermes'
 import { translateNow, type Translations } from '@/i18n'
+import { bindBrowserNotificationAdmission, trackBrowserNotificationTurn } from '@/lib/browser-notification-turns'
 import { type ChatMessage, finalizeInterruptedMessages, textPart } from '@/lib/chat-messages'
 import { optimisticAttachmentRef } from '@/lib/chat-runtime'
 import { sanitizeComposerInput } from '@/lib/composer-input-sanitize'
+import { hostHas } from '@/lib/host-capabilities'
 import { setMutableRef } from '@/lib/mutable-ref'
 import {
   isVoicePlaybackActive,
@@ -1157,7 +1159,17 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
                 const params: Record<string, unknown> = { ...prepared.params, session_id: liveId }
 
                 try {
-                  return await requestGateway<SubmitReceipt>('prompt.submit', params, PROMPT_SUBMIT_REQUEST_TIMEOUT_MS)
+                  if (hostHas('browserNotifications') && !retained) {
+                    trackBrowserNotificationTurn(submissionId)
+                  }
+
+                  const receipt = await requestGateway<SubmitReceipt>('prompt.submit', params, PROMPT_SUBMIT_REQUEST_TIMEOUT_MS)
+
+                  if (receipt?.submission_id === submissionId && receipt.admission_id) {
+                    bindBrowserNotificationAdmission(submissionId, receipt.admission_id)
+                  }
+
+                  return receipt
                 } catch (error) {
                   // A retry whose payload no longer matches its admitted original (an attachment send
                   // offered back as text) is that original: settled as the dedupe it is, no new turn.

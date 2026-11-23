@@ -258,7 +258,7 @@ export function dispatchNativeNotification(input: NativeNotificationInput): bool
     silent: $hapticsMuted.get() || input.silent,
     tag: input.tag,
     title
-  })
+  })?.catch(error => console.warn('[native-notifications]', error))
 
   return true
 }
@@ -427,18 +427,7 @@ export async function respondToApprovalAction(sessionId: null | string, actionId
   }
 }
 
-// Settings "send test" — bypasses gating. Returns whether the OS accepted it so
-// the panel can flag a silent permission failure instead of looking dead.
+// Settings "send test" bypasses delivery gates and lets the panel report bridge failures.
 export async function sendTestNativeNotification(title: string, body: string): Promise<boolean> {
-  const bridge = window.hermesDesktop
-
-  if (!bridge?.notify) {
-    return false
-  }
-
-  try {
-    return await bridge.notify({ body, kind: 'turnDone', title })
-  } catch {
-    return false
-  }
+  return window.hermesDesktop?.notify?.({ body, kind: 'turnDone', title }) ?? false
 }

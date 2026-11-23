@@ -3,15 +3,19 @@ import { type BillingBlock, mergeUsage } from '@hermes/shared'
 import { noteTurnSettled } from '@/app/session/hooks/use-session-actions/settled-turns'
 import { burstVibeHearts } from '@/components/chat/vibe-hearts'
 import { translateNow } from '@/i18n'
+import { takeBrowserNotificationTurn } from '@/lib/browser-notification-turns'
 import { type GatewayEventPayload, markQueuedPromptStarted } from '@/lib/chat-messages'
 import { coerceGatewayText, coerceThinkingText } from '@/lib/chat-runtime'
 import { playCompletionSound } from '@/lib/completion-sound'
 import { parseErrorSurface } from '@/lib/error-surface'
 import { triggerHaptic } from '@/lib/haptics'
+import { hostHas } from '@/lib/host-capabilities'
+import { turnDoneNotificationBody } from '@/lib/turn-done-notification-body'
 import { billingCtaLabel, clearBillingBlock, runBillingRecovery, setBillingBlock } from '@/store/billing-block'
 import { clearSettledClarifyRequest } from '@/store/clarify'
 import { setSessionCompacting } from '@/store/compaction'
 import { noteFreeTierTurnComplete } from '@/store/free-tier-sign-in'
+import { dispatchNativeNotification } from '@/store/native-notifications'
 import { notify } from '@/store/notifications'
 import { flashPetActivity, markPetUnread, setPetActivity } from '@/store/pet'
 import { clearAllPrompts } from '@/store/prompts'
@@ -437,6 +441,18 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
       payload?.response_reused === true,
       typeof payload?.failure_reason === 'string' ? payload.failure_reason : undefined
     )
+
+    const browser = hostHas('browserNotifications')
+    const ownTurn = browser && takeBrowserNotificationTurn(payload?.persisted_turn?.submission_id, event.admission_id)
+
+    if (!browser || (ownTurn && !event.replayed && payload?.status === 'complete')) {
+      dispatchNativeNotification({
+        body: turnDoneNotificationBody(finalText, translateNow('notifications.native.turnDoneBody')),
+        kind: 'turnDone',
+        sessionId,
+        title: translateNow('notifications.native.turnDoneTitle')
+      })
+    }
 
     if (payload?.status === 'complete') {
       noteFreeTierTurnComplete()

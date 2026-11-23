@@ -38,6 +38,7 @@ export const enNotifications = {
   browserPermission: {
     title: 'Browser notifications',
     allow: 'Allow',
+    requestFailed: 'The browser could not request notification permission. Check this site’s notification settings.',
     states: {
       default:
         'Show alerts from this browser while the tab is in the background. Until you allow it, only the tab title flashes.',
@@ -52,6 +53,7 @@ export const enNotifications = {
   testBody: 'Notifications are working.',
   testSent: 'Test sent. If nothing appears, check your OS notification permissions and Focus/Do Not Disturb.',
   testUnsupported: 'This system does not support native notifications.',
+  testFailed: 'The test notification failed to send. Reload Hermes and try again.',
   muteSoundsTitle: 'Mute interface sounds',
   muteSoundsDesc:
     'Silences automatic completion, wake-word and thinking cues, haptic feedback, and OS notification sounds. Sound previews and spoken replies still play.',

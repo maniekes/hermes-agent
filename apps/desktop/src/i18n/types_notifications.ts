@@ -12,6 +12,7 @@ export interface NotificationSettingsTranslations {
   browserPermission: {
     title: string
     allow: string
+    requestFailed: string
     states: Record<'default' | 'denied' | 'granted' | 'insecure' | 'unsupported', string>
   }
   test: string
@@ -19,6 +20,7 @@ export interface NotificationSettingsTranslations {
   testBody: string
   testSent: string
   testUnsupported: string
+  testFailed: string
   muteSoundsTitle: string
   muteSoundsDesc: string
   completionSoundTitle: string
