@@ -211,6 +211,21 @@ export const zhHantSettings = {
       }
     },
     notifications: {
+      diagnostics: {
+        title: "通知診斷",
+        intro: "記錄此頁面的通知判定，最長五分鐘。報告只保存在記憶體，不包含聊天內容，重新載入時會清除。",
+        frontendBuild: "前端組建",
+        start: "開始記錄",
+        stopAndCopy: "停止並複製報告",
+        copyReport: "複製報告",
+        clear: "清除",
+        capturing: "正在記錄。",
+        stopped: "已停止記錄。",
+        expired: "記錄已到期，可以複製報告。",
+        copied: "已複製報告。",
+        copyFailed: "無法使用剪貼簿。請選取並複製下方的報告。",
+        report: "通知報告"
+      },
       title: '通知',
       intro: '原生桌面通知，與應用程式內提示不同。設定會依裝置保存，每台電腦各自獨立。',
       enableAll: '啟用通知',

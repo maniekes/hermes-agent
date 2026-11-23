@@ -9,6 +9,7 @@ import {
 import { map, type MapStore } from 'nanostores'
 
 import type { HermesApiRequest } from '@/global'
+import { notificationDiagnosticRecorder } from '@/store/browser-notification-diagnostics'
 
 import { CanonicalDesktopProtocol, canonicalProfile, canonicalPromptParams, canonicalSessionKey, openGatewaySocket, recordCanonicalOwner, splitRewindSubmit } from './canonical-protocol'
 import { DialReadiness, GATEWAY_NOT_CONNECTED_MESSAGE, remainingRequestBudget } from './dial-readiness'
@@ -220,18 +221,30 @@ export class HermesGateway extends JsonRpcGatewayClient {
     const key = JSON.stringify([event.session_id, event.replay_epoch])
     // While an owner probe for this (session, epoch) runs, its frames wait and deliver in order.
     const parked = this.canonical && event.session_id ? this.parkedFrames.get(key) : undefined
+    const record = event.type === 'message.complete' ? notificationDiagnosticRecorder() : undefined
 
     const deliver = () => {
-      if (!this.canonical || this.normalizeCanonicalEvent(event)) { handler(event) }
+      if (!this.canonical || this.normalizeCanonicalEvent(event)) {
+        handler(event)
+      } else {
+        record?.({ step: 'transport', outcome: 'owner-unresolved', replayed: Boolean(event.replayed) })
+      }
     }
 
     if (parked) {
+      record?.({ step: 'transport', outcome: 'owner-held', replayed: Boolean(event.replayed) })
       parked.push(deliver)
     } else if (!this.canonical || this.normalizeCanonicalEvent(event)) {
       handler(event)
     } else {
       // The owner probe this frame just started may establish its route; it is the first frame parked.
-      this.parkedFrames.get(key)?.push(deliver)
+      const waiting = this.parkedFrames.get(key)
+      record?.({
+        step: 'transport',
+        outcome: waiting ? 'owner-held' : 'owner-unresolved',
+        replayed: Boolean(event.replayed)
+      })
+      waiting?.push(deliver)
     }
   }
 
@@ -579,6 +592,8 @@ export class HermesGateway extends JsonRpcGatewayClient {
       // The channel already answered -32603; surface the crash in devtools like the dial-failure sink.
       onRequestHandlerError: (error, request) =>
         console.error(`[gateway] server request handler crashed for ${request.method} (${request.id}):`, error),
+      onCompletionTransport: (outcome, replayed) =>
+        notificationDiagnosticRecorder()?.({ step: 'transport', outcome, replayed }),
       onUncorrelatedError: error =>
         console.error(`[gateway] error frame with no request id (code ${error.code ?? 'none'}): ${error.message}`),
       // The channel already answered -32601; note the missing registry in devtools.

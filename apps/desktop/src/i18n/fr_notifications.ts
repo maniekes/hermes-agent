@@ -49,6 +49,21 @@ export const frNotifications = {
       unsupported: "Ce navigateur ne peut pas afficher de notifications. Le titre de l'onglet clignote quand même."
     }
   },
+  diagnostics: {
+    title: "Diagnostic des notifications",
+    intro: "Enregistre les décisions sur cette page pendant cinq minutes au maximum. Le rapport reste en mémoire, exclut le contenu des conversations et disparaît au rechargement.",
+    frontendBuild: "Version du frontend",
+    start: "Démarrer la capture",
+    stopAndCopy: "Arrêter et copier le rapport",
+    copyReport: "Copier le rapport",
+    clear: "Effacer",
+    capturing: "Capture en cours.",
+    stopped: "Capture arrêtée.",
+    expired: "Capture expirée. Le rapport peut être copié.",
+    copied: "Rapport copié.",
+    copyFailed: "Presse-papiers indisponible. Sélectionnez et copiez le rapport ci-dessous.",
+    report: "Rapport de notifications"
+  },
   test: 'Envoyer une notification de test',
   testTitle: 'Hermes',
   testBody: 'Les notifications fonctionnent.',

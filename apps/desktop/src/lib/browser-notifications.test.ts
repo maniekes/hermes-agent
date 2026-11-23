@@ -1,5 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import {
+  $notificationDiagnostics,
+  clearNotificationDiagnostics,
+  startNotificationDiagnostics,
+  stopNotificationDiagnostics
+} from '@/store/browser-notification-diagnostics'
+
 import { onBrowserFocusSession, showBrowserNotification } from './browser-notifications'
 
 const created: FakeNotification[] = []
@@ -54,6 +61,7 @@ describe('showBrowserNotification', () => {
   })
 
   afterEach(() => {
+    clearNotificationDiagnostics()
     vi.restoreAllMocks()
     vi.unstubAllGlobals()
   })
@@ -124,6 +132,35 @@ describe('showBrowserNotification', () => {
     expect(postMessage).not.toHaveBeenCalled()
     await expect(showBrowserNotification({})).rejects.toThrow('NotAllowedError')
     expect(postMessage).toHaveBeenCalledOnce()
+  })
+
+  it('reports permission, successful worker delivery and failure codes without leaking the inputs', async () => {
+    const canary = 'private-notification-diagnostic-canary'
+    const { register } = workerFixture()
+    const payload = { body: canary, title: canary, focusSessionId: canary, tag: canary }
+    startNotificationDiagnostics()
+    FakeNotification.permission = 'denied'
+    expect(await showBrowserNotification(payload)).toBe(false)
+    FakeNotification.permission = 'granted'
+    expect(await showBrowserNotification(payload)).toBe(true)
+    register.mockRejectedValueOnce(new Error(canary))
+    await expect(showBrowserNotification(payload)).rejects.toThrow(canary)
+    workerFixture({ ok: false, error: canary })
+    await expect(showBrowserNotification(payload)).rejects.toThrow(canary)
+    stopNotificationDiagnostics()
+
+    const { report } = $notificationDiagnostics.get()
+    const outcomes = report.split('\n').slice(1).map(line => JSON.parse(line).outcome)
+    expect(outcomes).toEqual([
+      'denied',
+      'granted', 'constructor-fallback', 'worker-registering', 'worker-registered',
+      'worker-active', 'worker-posted', 'worker-shown',
+      'granted', 'constructor-fallback', 'worker-registering', 'worker-register-failed',
+      'granted', 'constructor-fallback', 'worker-registering', 'worker-registered',
+      'worker-active', 'worker-posted', 'worker-show-failed'
+    ])
+    expect(report).not.toContain(canary)
+    expect(report).not.toContain(window.location.origin)
   })
 
   it('propagates desktop delivery errors without retrying via the worker', async () => {

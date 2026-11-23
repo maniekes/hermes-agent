@@ -85,6 +85,7 @@ export async function buildWebapp({ source, workspace, out }) {
     await build({
       root: join(workspace, app),
       configLoader: 'runner',
+      define: { __HERMES_WEBAPP_BUILD__: JSON.stringify(inputs.sourceHash.slice(0, 16)) },
       cacheDir: join(scratch, 'vite-cache'),
       build: { outDir: product, emptyOutDir: true, manifest: manifestName },
     })

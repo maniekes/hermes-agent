@@ -1,9 +1,11 @@
 import { atom } from 'nanostores'
 
+import { isPaneVisible } from '@/components/pane-shell/tree/store'
 import { translateNow } from '@/i18n'
 import { type HermesOpenTarget, resolveHermesOpenPath } from '@/lib/hermes-open-target'
 import { persistString, storedString } from '@/lib/storage'
 
+import { type NotificationDiagnosticRecorder, notificationDiagnosticRecorder } from './browser-notification-diagnostics'
 import { recordFeatureToggle } from './desktop-metrics'
 import { $gateway } from './gateway'
 import { $hapticsMuted } from './haptics'
@@ -17,7 +19,8 @@ import {
 } from './prompts'
 import { isSessionGone, isSessionGoneForBackgroundPolling, markSessionGone } from './runtime-gone'
 import { $activeSessionId, ownerLookupSessionRows, sessionMatchesStoredId } from './session'
-import { storedSessionIdForRuntimeId } from './session-states'
+import { $focusedTreePaneId } from './session-focus'
+import { $focusedRuntimeId, storedSessionIdForRuntimeId } from './session-states'
 
 export type { HermesOpenTarget }
 
@@ -141,7 +144,12 @@ function isBackgrounded(): boolean {
   return typeof document.hasFocus === 'function' && !document.hasFocus()
 }
 
-function shouldFire(kind: NativeNotificationKind, sessionId?: null | string, global = false): boolean {
+function shouldFire(
+  kind: NativeNotificationKind,
+  sessionId?: null | string,
+  global = false,
+  record?: NotificationDiagnosticRecorder
+): boolean {
   // Global notifications aren't tied to a chat session (e.g. pet generation,
   // which runs from the command center with no active conversation). They fire
   // whenever the user is away, with no session-match requirement — otherwise a
@@ -157,7 +165,25 @@ function shouldFire(kind: NativeNotificationKind, sessionId?: null | string, glo
 
   // Completion kinds: only the active session, only while away — so a busy
   // gateway (messaging, kanban, cron) can't spam a toast per background session.
-  return isBackgrounded() && Boolean(sessionId) && sessionId === $activeSessionId.get()
+  if (!isBackgrounded()) {
+    record?.({ step: 'notify-filter', outcome: 'foreground' })
+
+    return false
+  }
+
+  if (!sessionId) {
+    record?.({ step: 'notify-filter', outcome: 'no-session' })
+
+    return false
+  }
+
+  const matchesMain = sessionId === $activeSessionId.get()
+
+  if (!matchesMain) {
+    record?.({ step: 'notify-filter', outcome: 'main-session-mismatch' })
+  }
+
+  return matchesMain
 }
 
 /** Last-resort label for a session the renderer has no row for (yet): the id
@@ -234,41 +260,83 @@ export function dispatchSubmittedBrowserTurnNotification(input: Omit<NativeNotif
 
 function dispatchNotification(input: NativeNotificationInput, submittedBrowserTurn: boolean): boolean {
   const prefs = $nativeNotifyPrefs.get()
+  const record = input.kind === 'turnDone' ? notificationDiagnosticRecorder() : undefined
+  record?.({
+    step: 'notify-context',
+    enabled: prefs.enabled,
+    responseReady: prefs.kinds.turnDone,
+    hidden: document.hidden,
+    focused: typeof document.hasFocus === 'function' && document.hasFocus(),
+    matchesMain: Boolean(input.sessionId && input.sessionId === $activeSessionId.get()),
+    matchesVisible: Boolean(
+      input.sessionId &&
+      input.sessionId === $focusedRuntimeId.get() &&
+      isPaneVisible($focusedTreePaneId.get() ?? 'workspace')
+    )
+  })
 
   if (!prefs.enabled || !prefs.kinds[input.kind]) {
+    record?.({ step: 'notify-filter', outcome: 'preferences' })
+
     return false
   }
 
   // A completion matched to this page's pending submission is new work even during reconnect.
   if (!submittedBrowserTurn && withinNativeNotifyBaseline()) {
+    record?.({ step: 'notify-filter', outcome: 'baseline' })
+
     return false
   }
 
-  if (!shouldFire(input.kind, input.sessionId, input.global)) {
+  if (!shouldFire(input.kind, input.sessionId, input.global, record)) {
     return false
   }
 
   if (throttled(`${input.kind}:${input.sessionId ?? input.tag ?? (input.global ? 'global' : '')}`, Date.now())) {
+    record?.({ step: 'notify-filter', outcome: 'throttled' })
+
     return false
   }
 
+  record?.({ step: 'notify-filter', outcome: 'passed' })
   const namedKey = input.sessionId ? NAMED_TITLE_KEYS[input.kind] : undefined
   const title = namedKey && input.sessionId ? withSessionLabel(namedKey, input.sessionId) : input.title
 
-  void window.hermesDesktop?.notify({
-    actions: input.actions,
-    activate: input.activate,
-    body: input.body,
-    focusSessionId: input.sessionId ? (storedSessionIdForRuntimeId(input.sessionId) ?? undefined) : undefined,
-    icon: input.icon,
-    kind: input.kind,
-    notifyId: input.notifyId,
-    sessionId: input.sessionId ?? undefined,
-    // The app-sounds mute also silences OS notification sounds.
-    silent: $hapticsMuted.get() || input.silent,
-    tag: input.tag,
-    title
-  })?.catch(error => console.warn('[native-notifications]', error))
+  const bridge = window.hermesDesktop
+  record?.({ step: 'bridge', outcome: typeof bridge?.notify === 'function' ? 'attempted' : 'missing' })
+
+  try {
+    const delivery = bridge?.notify({
+      actions: input.actions,
+      activate: input.activate,
+      body: input.body,
+      focusSessionId: input.sessionId ? (storedSessionIdForRuntimeId(input.sessionId) ?? undefined) : undefined,
+      icon: input.icon,
+      kind: input.kind,
+      notifyId: input.notifyId,
+      sessionId: input.sessionId ?? undefined,
+      // The app-sounds mute also silences OS notification sounds.
+      silent: $hapticsMuted.get() || input.silent,
+      tag: input.tag,
+      title
+    })
+
+    void delivery?.catch(error => {
+      record?.({ step: 'bridge', outcome: 'rejected' })
+      console.warn('[native-notifications]', error)
+    })
+
+    if (record) {
+      void delivery?.then(
+        shown => record({ step: 'bridge', outcome: shown ? 'returned-true' : 'returned-false' }),
+        () => undefined
+      )
+    }
+  } catch (error) {
+    record?.({ step: 'bridge', outcome: 'rejected' })
+
+    throw error
+  }
 
   return true
 }

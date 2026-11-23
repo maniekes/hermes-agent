@@ -28,6 +28,11 @@ export interface GatewayClientOptions {
   onUnhandledRequest?: JsonRpcRequestChannelOptions['onUnhandledRequest']
   /** An error frame no request owns (the backend's parse-error reply). */
   onUncorrelatedError?: JsonRpcRequestChannelOptions['onUncorrelatedError']
+  /** Temporary Webapp notification probe. No event payload or identity crosses this callback. */
+  onCompletionTransport?: (
+    outcome: 'received' | 'replay-held' | 'replay-stale' | 'delivered',
+    replayed: boolean
+  ) => void
   /** Return true to intercept the default closed-state transition. */
   onSocketClose?: (event: { code: number }) => boolean | void
   /** Fetch `session.events.since` after a reconnect (default). Off for notification-only feeds whose peer never answers RPCs. */
@@ -166,9 +171,9 @@ export class JsonRpcGatewayClient {
   private replayEpochBySession = new Map<string, string>()
   private readonly stateHandlers = new Set<(state: ConnectionState) => void>()
   private readonly options: Required<
-    Omit<GatewayClientOptions, 'onRequestHandlerError' | 'onUncorrelatedError' | 'onUnhandledRequest' | 'socketFactory'>
+    Omit<GatewayClientOptions, 'onCompletionTransport' | 'onRequestHandlerError' | 'onUncorrelatedError' | 'onUnhandledRequest' | 'socketFactory'>
   > &
-    Pick<GatewayClientOptions, 'onRequestHandlerError' | 'onUncorrelatedError' | 'onUnhandledRequest' | 'socketFactory'>
+    Pick<GatewayClientOptions, 'onCompletionTransport' | 'onRequestHandlerError' | 'onUncorrelatedError' | 'onUnhandledRequest' | 'socketFactory'>
 
   /**
    * This client is the Desktop app on the backend's own machine, read at each socket open
@@ -190,6 +195,7 @@ export class JsonRpcGatewayClient {
       onSocketClose: options.onSocketClose ?? (() => false),
       replay: options.replay ?? true,
       requestIdPrefix: options.requestIdPrefix ?? 'r',
+      onCompletionTransport: options.onCompletionTransport,
       onRequestHandlerError: options.onRequestHandlerError,
       onUncorrelatedError: options.onUncorrelatedError,
       onUnhandledRequest: options.onUnhandledRequest,
@@ -453,6 +459,10 @@ export class JsonRpcGatewayClient {
   }
 
   private handleEvent(event: GatewayEvent): void {
+    if (event.type === 'message.complete') {
+      this.options.onCompletionTransport?.('received', Boolean(event.replayed))
+    }
+
     if (isGatewayReady(event)) {
       if (event.payload?.heartbeat === true) {
         this.channel.startHeartbeat()
@@ -472,6 +482,10 @@ export class JsonRpcGatewayClient {
       // Replay in flight for this session: park the frame; flushReplayHold
       // dispatches it after the replayed gap, gated on seq.
       this.replayHold.get(sid)?.events.push(event)
+
+      if (event.type === 'message.complete') {
+        this.options.onCompletionTransport?.('replay-held', Boolean(event.replayed))
+      }
 
       return
     }
@@ -646,6 +660,10 @@ export class JsonRpcGatewayClient {
         }
 
         if (event?.type) {
+          if (event.type === 'message.complete') {
+            this.options.onCompletionTransport?.('received', true)
+          }
+
           this.dispatchIfNewer({ ...event, replayed: true })
         }
       }
@@ -732,6 +750,10 @@ export class JsonRpcGatewayClient {
       const prev = this.lastSeenSeq.get(sid) ?? 0
 
       if (seq <= prev) {
+        if (event.type === 'message.complete') {
+          this.options.onCompletionTransport?.('replay-stale', Boolean(event.replayed))
+        }
+
         return
       }
 
@@ -844,6 +866,10 @@ export class JsonRpcGatewayClient {
   }
 
   private dispatchEvent(event: GatewayEvent): void {
+    if (event.type === 'message.complete') {
+      this.options.onCompletionTransport?.('delivered', Boolean(event.replayed))
+    }
+
     // Tag the frame with the process epoch this socket adopted so a consumer
     // holding several sockets to one backend can recognise the same event
     // arriving on each of them; the epoch is per process, not per socket.
