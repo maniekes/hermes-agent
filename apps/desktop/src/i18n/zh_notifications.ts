@@ -7,9 +7,16 @@ export const zhNotifications = {
   webPushPolicy: {
     title: '回复已就绪',
     inherit: '继承（关闭）',
+    inheritOn: '继承（开启）',
     on: '开启',
     off: '关闭',
     failed: '无法保存此对话的通知设置。'
+  },
+  webPushProfileDefault: {
+    label: '回复就绪通知默认值（{profile}）',
+    description: '在设备之间共享，适用于继承此配置文件默认值的对话。',
+    failed: '无法保存配置文件的默认值。',
+    unavailable: '无法读取配置文件的默认值。'
   },
   webPushPreview: {
     label: '显示消息预览',

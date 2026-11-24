@@ -25,6 +25,7 @@ async def test_response_ready_tool_is_current_owned_and_fenced(tmp_path, monkeyp
     from gateway.session_local import create_local_session
     from gateway.session_local_recovery import local_adapter
     from gateway.session_mutations import mutate_session
+    from gateway.web_push.conversation import change_profile_default, profile_default
     from model_tools import get_tool_definitions, handle_function_call
     from tools.registry import registry, session_tool_scope
 
@@ -70,15 +71,23 @@ async def test_response_ready_tool_is_current_owned_and_fenced(tmp_path, monkeyp
         assert [tool['function']['name'] for tool in schemas] == [TOOL]
         assert set(schemas[0]['function']['parameters']['properties']) == {'mode'}
         assert definitions() == schemas
-        assert await asyncio.to_thread(invoke) == {'mode': 'inherit', 'effective': 'off'}
+        assert await asyncio.to_thread(invoke) == {'mode': 'inherit', 'default': 'off', 'effective': 'off'}
         assert 'error' in invoke(mode='on', session_id=sibling.session_id)
         assert 'error' in invoke(mode='on', profile_id='foreign', owner='foreign')
-        assert invoke(mode='on') == {'mode': 'on', 'effective': 'on'}
+        assert 'error' in invoke(default='on')
+        with authority.db._read_ctx() as conn:
+            assert profile_default(conn) == {'enabled': False, 'revision': 0}
+        authority.db._execute_write(lambda conn: change_profile_default(conn, True, 0))
+        assert invoke() == {'mode': 'inherit', 'default': 'on', 'effective': 'on'}
+        assert invoke(mode='off') == {'mode': 'off', 'default': 'on', 'effective': 'off'}
+        assert invoke(mode='inherit') == {'mode': 'inherit', 'default': 'on', 'effective': 'on'}
+        authority.db._execute_write(lambda conn: change_profile_default(conn, False, 1))
+        assert invoke(mode='on') == {'mode': 'on', 'default': 'off', 'effective': 'on'}
         assert definitions() == schemas
-        assert invoke() == {'mode': 'on', 'effective': 'on'}
+        assert invoke() == {'mode': 'on', 'default': 'off', 'effective': 'on'}
         assert json.loads(handle_function_call(
             'tool_call', {'name': TOOL, 'arguments': {}}, enabled_toolsets=[TOOLSET])
-        ) == {'mode': 'on', 'effective': 'on'}
+        ) == {'mode': 'on', 'default': 'off', 'effective': 'on'}
         with delegated_child_context():
             assert not definitions()
             assert 'error' in invoke(mode='off')

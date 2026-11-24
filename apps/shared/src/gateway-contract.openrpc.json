@@ -35045,6 +35045,22 @@
             "title": "Mode",
             "type": "string"
           },
+          "default": {
+            "anyOf": [
+              {
+                "enum": [
+                  "on",
+                  "off"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Default"
+          },
           "effective": {
             "enum": [
               "on",

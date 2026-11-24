@@ -11,11 +11,13 @@ from starlette.responses import JSONResponse
 from gateway.session_authorities import local_bots, served_profile_name
 from gateway.session_identity import authenticated_principal_digest
 from gateway.web_push import store
+from gateway.web_push.conversation import change_profile_default, manages_response_ready, profile_default
 from gateway.web_push.delivery import PreviewSendUnconfirmed, installation_digest
 from hermes_cli import browser_credential
 from hermes_cli.dashboard_auth.cookies import read_web_push_revoke_cookie, set_web_push_revoke_cookie
 from hermes_cli.dashboard_auth.request_utils import cookie_origin_is_allowed
 from hermes_cli.webapp_sign_in import check, cookie_gateway, sign_in_of
+from hermes_state_runtime import RuntimeStoreError, _epoch
 
 router = APIRouter(prefix="/api/webapp/web-push")
 _DEVICE_HEADER = "x-hermes-push-installation"
@@ -83,7 +85,7 @@ async def revoke_on_logout(request):
     await run_in_threadpool(_control_db(state)._execute_write, revoke_proven_grant)
 
 
-def _context(request, profile):
+def _signed_in(request):
     state = request.app.state
     if getattr(state, "ui_surface", None) != "webapp":
         raise HTTPException(404, "Web Push is unavailable")
@@ -91,15 +93,25 @@ def _context(request, profile):
     login = sign_in_of(request)
     if session is None or login is None:
         raise HTTPException(401, "Webapp sign-in required")
+    return session, login
+
+
+def _profile_authority(state, profile):
+    primary = getattr(state, "session_authority", None)
+    runner = getattr(state, "gateway_runner", None)
+    return next((bot.authority for bot in local_bots(runner) if not bot.problem and not bot.retiring and (
+        bot.name == profile if profile is not None else bot.authority is primary)), None)
+
+
+def _context(request, profile):
+    session, login = _signed_in(request)
     device = _device(request)
     if not device:
         raise HTTPException(400, "Invalid Web Push installation")
+    state = request.app.state
     runner = getattr(state, "gateway_runner", None)
     push = getattr(runner, "web_push", None)
-    primary = getattr(state, "session_authority", None)
-    bot = next((bot for bot in local_bots(runner) if not bot.problem and not bot.retiring and (
-        bot.name == profile if profile else bot.authority is primary)), None)
-    return push, bot.authority if bot else None, device, _principal(session), login
+    return push, _profile_authority(state, profile or None), device, _principal(session), login
 
 
 async def _read_body(request):
@@ -127,6 +139,60 @@ async def push_status(request: Request, profile: str | None = None):
     active = await run_in_threadpool(push.active, authority, device, owner, login)
     return _response(available=True, active=active is not None, publicKey=push.public_key, conversationPolicy=True,
                      **({"preview": bool(active["preview"])} if active is not None else {}))
+
+
+def _profile_default_authority(request, profile):
+    # Only the Webapp's full browser sign-in can manage a profile preference.
+    _signed_in(request)
+    state = request.app.state
+    if request.query_params.getlist("profile") != [profile] or not profile:
+        raise HTTPException(400, "Expected one Webapp profile")
+    if not manages_response_ready(getattr(state, "gateway_runner", None)):
+        raise HTTPException(404, "Response ready profile default is unavailable")
+    authority = _profile_authority(state, profile)
+    if authority is None:
+        raise HTTPException(503, "Selected Webapp profile is unavailable")
+    return authority
+
+
+def _read_profile_default(db):
+    with db._read_ctx() as conn:
+        return profile_default(conn)
+
+
+@router.get("/profile-default")
+async def get_profile_default(request: Request, profile: str):
+    db = _profile_default_authority(request, profile).db
+    return _response(**await run_in_threadpool(_read_profile_default, db))
+
+
+def _write_profile_default(authority, enabled, revision):
+    def write(conn):
+        authority._require_admission_open()
+        _epoch(conn, authority.epoch)
+        return change_profile_default(conn, enabled, revision)
+    return authority.db._execute_write(write)
+
+
+@router.post("/profile-default")
+async def set_profile_default(request: Request, profile: str):
+    if not request.headers.get("origin") or not cookie_origin_is_allowed(request):
+        raise HTTPException(403, "Web Push requests must come from this Webapp")
+    authority = _profile_default_authority(request, profile)
+    value = await _read_body(request)
+    if (not isinstance(value, dict) or value.keys() != {"enabled", "expected_revision"}
+            or type(value["enabled"]) is not bool or type(value["expected_revision"]) is not int
+            or not 0 <= value["expected_revision"] < 2**53):
+        raise HTTPException(400, "Expected a response ready default and revision")
+    try:
+        saved = await run_in_threadpool(_write_profile_default, authority, value["enabled"], value["expected_revision"])
+    except RuntimeStoreError as exc:
+        if exc.reason == "revision_conflict":
+            raise HTTPException(409, "Response ready profile default changed") from None
+        if exc.reason in {"runtime_draining", "stale_epoch"}:
+            raise HTTPException(503, "Selected Webapp profile is unavailable") from None
+        raise
+    return _response(**saved)
 
 
 @router.post("/{action}")

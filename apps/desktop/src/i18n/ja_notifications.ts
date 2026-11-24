@@ -7,9 +7,16 @@ export const jaNotifications = {
   webPushPolicy: {
     title: '回答が完了したとき',
     inherit: '既定値を使用（オフ）',
+    inheritOn: '既定値を使用（オン）',
     on: 'オン',
     off: 'オフ',
     failed: 'この会話の通知設定を保存できませんでした。'
+  },
+  webPushProfileDefault: {
+    label: '回答完了通知の既定値（{profile}）',
+    description: '端末間で共有され、このプロフィールの既定値を使用する会話に適用されます。',
+    failed: 'プロフィールの既定値を保存できませんでした。',
+    unavailable: 'プロフィールの既定値を取得できませんでした。'
   },
   webPushPreview: {
     label: 'メッセージのプレビューを表示',

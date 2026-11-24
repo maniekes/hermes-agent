@@ -182,18 +182,21 @@ applies to queued deliveries and retries. The gateway waits briefly for a reserv
 before confirming the change. A timeout leaves that attempt uncertain, and an alert already dispatched
 may still show a preview. Ambiguous hidden markup, media paths and overlong source text use a generic alert.
 
-The chat header has a **Response ready** policy for that conversation. **Inherit** uses the default
-of **Off**. **On** sends only to the eligible installation that originally submitted the turn.
-It can apply to an active turn when enabled before settlement and that turn already has an eligible
-target. Turning the policy off cancels queued alerts and retries for the conversation. Turning it
-back on leaves those entries cancelled. An attempt already in progress may still produce an alert.
-The assistant's `response_ready_here` action can read or set this policy in an authorized,
-in-process local turn. Editor MCP turns, delegated agents and managed workers omit this action.
+**Settings → Notifications → Response ready default (profile name)** applies to conversations set
+to **Inherit** in that profile. The default starts **Off** and is shared across devices. Each
+conversation can choose **Inherit**, **On** or **Off** in its chat header. Explicit choices survive
+profile default changes. Device enrollment, **Enable notifications** and preview consent are managed
+separately. On upgrade, existing conversation choices and enrollments are retained. Older device-local
+Response ready choices do not seed the shared default.
 
-On upgrade, existing conversations start at **Inherit (off)**. Existing device enrollment, the
-device-wide switch and preview consent survive the upgrade. The earlier device-local **Response
-ready** preference is no longer used for conversations on this gateway. Choose **On** for each
-conversation that should send alerts.
+An effective **On** sends only to the eligible installation that originally submitted the turn.
+A change before settlement can apply to a current turn if it already has an eligible target.
+Changing the profile default to **Off** cancels queued alerts and retries for inheriting conversations.
+Changing a conversation to effective **Off** cancels its queued alerts and retries. Turning either
+setting back on leaves those entries cancelled. An attempt already in progress may still produce an
+alert. The assistant's `response_ready_here` action reads the effective policy and can set the
+current conversation's override in an authorized in-process local turn. Editor MCP turns, delegated
+agents and managed workers omit this action.
 
 Delivery is best effort and an alert already
 accepted by the push provider may still appear after disabling. Turning off **Enable notifications** revokes this installation across the

@@ -125,3 +125,21 @@ it('ignores an older focus read after a mutation and an old readback after chang
   expect(screen.getByRole<HTMLSelectElement>('combobox').value).toBe('off')
   expect(request).toHaveBeenLastCalledWith('session.info', { session_id: 'chat-b' })
 })
+
+it('shows the inherited profile value after focus without changing the conversation override', async () => {
+  const request = vi.fn()
+    .mockResolvedValueOnce({ response_ready_policy: { default: 'off', effective: 'off', mode: 'inherit', revision: 2 } })
+    .mockResolvedValueOnce({ response_ready_policy: { default: 'on', effective: 'on', mode: 'inherit', revision: 2 } })
+    .mockRejectedValueOnce(new Error('unavailable'))
+
+  render(<ResponseReadyPolicyPicker request={request} sessionId="chat-a" />)
+  const picker = await screen.findByRole<HTMLSelectElement>('combobox')
+  expect(picker.value).toBe('inherit')
+  expect(screen.getByRole('option', { name: 'Inherit (off)' })).toBeTruthy()
+  await act(async () => { fireEvent.focus(window) })
+  expect(screen.getByRole('option', { name: 'Inherit (on)' })).toBeTruthy()
+  expect(picker.value).toBe('inherit')
+  expect(request.mock.calls.every(([method]) => method === 'session.info')).toBe(true)
+  await act(async () => { fireEvent.focus(window) })
+  expect(screen.queryByRole('combobox')).toBeNull()
+})

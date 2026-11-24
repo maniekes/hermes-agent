@@ -100,6 +100,7 @@ class SessionMutateParams(Params):
 
 class ResponseReadyPolicy(OpenModel):
     mode: Literal["inherit", "on", "off"]
+    default: Literal["on", "off"] | None = None
     effective: Literal["on", "off"]
     revision: int | None = None
 

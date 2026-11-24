@@ -250,9 +250,16 @@ export const arSettings = {
       webPushPolicy: {
         title: 'الرد جاهز',
         inherit: 'وراثة (متوقف)',
+        inheritOn: 'وراثة (مفعّل)',
         on: 'تشغيل',
         off: 'إيقاف',
         failed: 'تعذّر حفظ إعداد إشعارات هذه المحادثة.'
+      },
+      webPushProfileDefault: {
+        label: 'الإعداد الافتراضي لإشعار الرد جاهز ({profile})',
+        description: 'إعداد مشترك بين الأجهزة تستخدمه المحادثات التي ترث إعدادات الملف الشخصي.',
+        failed: 'تعذّر حفظ الإعداد الافتراضي للملف الشخصي.',
+        unavailable: 'تعذّرت قراءة الإعداد الافتراضي للملف الشخصي.'
       },
       webPushPreview: {
         label: 'عرض معاينة الرسائل',

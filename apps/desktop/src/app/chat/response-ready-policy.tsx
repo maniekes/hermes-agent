@@ -14,6 +14,7 @@ const modes = ['inherit', 'on', 'off'] as const
 type Mode = typeof modes[number]
 
 interface Policy {
+  default?: 'off' | 'on'
   effective: 'off' | 'on'
   mode: Mode
   revision: number
@@ -22,8 +23,13 @@ interface Policy {
 function policyFrom(response: unknown): Policy | undefined {
   const policy = (response as { response_ready_policy?: Policy } | undefined)?.response_ready_policy
 
-  return policy && modes.includes(policy.mode) && Number.isSafeInteger(policy.revision) &&
-    policy.effective === (policy.mode === 'on' ? 'on' : 'off') ? policy : undefined
+  if (!policy || !modes.includes(policy.mode) || !Number.isSafeInteger(policy.revision)) { return undefined }
+
+  const inherited = policy.default === undefined ? 'off' : policy.default
+
+  if (inherited !== 'off' && inherited !== 'on') { return undefined }
+
+  return policy.effective === (policy.mode === 'inherit' ? inherited : policy.mode) ? policy : undefined
 }
 
 type RequestPolicy = (method: string, params: Record<string, unknown>) => Promise<unknown>
@@ -52,9 +58,9 @@ function SessionPolicyPicker({ request, sessionId }: PickerProps) {
     if (mutating.current) { return }
 
     const id = ++requestVersion.id
-    void read().then(next => {
+    void read().catch(() => undefined).then(next => {
       if (id === requestVersion.id) { setPolicy(next) }
-    }).catch(() => {})
+    })
   }, [read, requestVersion])
 
   useEffect(() => {
@@ -110,7 +116,9 @@ function SessionPolicyPicker({ request, sessionId }: PickerProps) {
       className="pointer-events-auto ml-2 max-w-36 truncate rounded border border-(--ui-border) bg-(--ui-surface) px-1 text-xs"
       disabled={busy} onChange={event => void change(event.target.value as Mode)}
       onFocus={refresh} title={copy.title} value={policy.mode}>
-      {modes.map(mode => <option key={mode} value={mode}>{copy[mode]}</option>)}
+      {modes.map(mode => <option key={mode} value={mode}>
+        {mode === 'inherit' && policy.default === 'on' ? copy.inheritOn : copy[mode]}
+      </option>)}
     </select>
   )
 }

@@ -4837,6 +4837,7 @@ export interface SessionMutateResult {
 }
 export interface ResponseReadyPolicy {
   mode: 'inherit' | 'on' | 'off'
+  default?: 'on' | 'off' | null
   effective: 'on' | 'off'
   revision?: number | null
   [key: string]: unknown

@@ -1,4 +1,6 @@
 """Conversation policy is separate from enrollment and admission device selection."""
+import json
+
 from gateway.config import Platform
 from gateway.owner_identity import same_owner
 from gateway.session_history_mount import is_history_mount
@@ -6,6 +8,7 @@ from hermes_state_local import local_conversation_ids, local_lineage_owner
 from hermes_state_runtime import RuntimeStoreError
 
 MODES = frozenset({"inherit", "on", "off"})
+_PROFILE_DEFAULT_KEY = "gateway.web_push.response_ready_default.v1"
 
 
 def manages_response_ready(runner):
@@ -24,11 +27,41 @@ def owns_policy(authority, ref, subject):
 
 def read_policy(conn, session_id):
     owner = local_lineage_owner(conn, session_id)
-    row = conn.execute("SELECT response_ready FROM sessions WHERE id=?", (owner,)).fetchone()
+    row = conn.execute(
+        """SELECT response_ready, (SELECT value FROM state_meta WHERE key=?) AS profile_default
+           FROM sessions WHERE id=?""", (_PROFILE_DEFAULT_KEY, owner)).fetchone()
     if row is None:
         raise RuntimeStoreError('not_found')
     mode = row['response_ready']
-    return owner, {"mode": mode, "effective": "on" if mode == "on" else "off"}
+    default = "on" if _decode_default(row['profile_default'])["enabled"] is True else "off"
+    return owner, {"mode": mode, "default": default, "effective": default if mode == "inherit" else mode}
+
+
+def _decode_default(value):
+    return {"enabled": False, "revision": 0} if value is None else json.loads(value)
+
+
+def profile_default(conn):
+    row = conn.execute("SELECT value FROM state_meta WHERE key=?", (_PROFILE_DEFAULT_KEY,)).fetchone()
+    return _decode_default(row[0] if row else None)
+
+
+def change_profile_default(conn, enabled, expected_revision):
+    current = profile_default(conn)
+    if current["revision"] != expected_revision:
+        raise RuntimeStoreError('revision_conflict')
+    if current["enabled"] == enabled:
+        return current
+    updated = {"enabled": enabled, "revision": expected_revision + 1}
+    conn.execute(
+        """INSERT INTO state_meta(key,value) VALUES(?,?)
+           ON CONFLICT(key) DO UPDATE SET value=excluded.value""", (_PROFILE_DEFAULT_KEY, json.dumps(updated)))
+    if not enabled:
+        pending = conn.execute("""SELECT DISTINCT q.session_id FROM web_push_outbox q
+                                  JOIN sessions s ON s.id=q.session_id WHERE q.due_at IS NOT NULL""").fetchall()
+        inherited = [(sid,) for (sid,) in pending if read_policy(conn, sid)[1]["mode"] == "inherit"]
+        _cancel_pending(conn, inherited)
+    return updated
 
 
 def snapshot(authority, ref):
@@ -52,7 +85,11 @@ def change_policy(conn, session_id, mode):
         raise RuntimeStoreError('invalid_params')
     owner, _ = read_policy(conn, session_id)
     conn.execute("UPDATE sessions SET response_ready=? WHERE id=?", (mode, owner))
-    if mode != "on":
-        conn.executemany("UPDATE web_push_outbox SET due_at=NULL WHERE session_id=? AND due_at IS NOT NULL",
-                         [(sid,) for sid in local_conversation_ids(conn, owner)])
-    return read_policy(conn, session_id)
+    result = read_policy(conn, session_id)
+    if result[1]["effective"] == "off":
+        _cancel_pending(conn, [(sid,) for sid in local_conversation_ids(conn, owner)])
+    return result
+
+
+def _cancel_pending(conn, segments):
+    conn.executemany("UPDATE web_push_outbox SET due_at=NULL WHERE session_id=? AND due_at IS NOT NULL", segments)

@@ -27,10 +27,12 @@ import {
   setNativeNotifyKind
 } from '@/store/native-notifications'
 import { notify } from '@/store/notifications'
+import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import { $connection } from '@/store/session'
 
 import { CONTROL_TEXT } from './constants'
 import { ListRow, SectionHeading, SettingsContent, ToggleRow } from './primitives'
+import { ResponseReadyProfileDefaultRow } from './response-ready-profile-default'
 import { notificationKindSettingId, SETTING_IDS, settingElementId } from './settings-manifest'
 import { useSettingDeepLink } from './use-setting-deep-link'
 
@@ -96,6 +98,8 @@ export function NotificationsSettings({ subpage }: NotificationsSettingsProps = 
   const connection = useStore($connection)
   const localBrowser = browser && (!connection?.connectionId || connection.connectionId === LOCAL_CONNECTION_ID)
   const profile = connection?.profile ?? null
+  const activeProfile = useStore($activeGatewayProfile)
+  const defaultProfile = normalizeProfileKey(profile ?? activeProfile)
   const pushScope = localBrowser ? profile ?? '' : null
   const [pushState, setPushState] = useState<{ scope: null | string; status?: WebPushStatus; failed?: boolean }>({ scope: null })
   const [pushBusy, setPushBusy] = useState(false)
@@ -338,6 +342,8 @@ export function NotificationsSettings({ subpage }: NotificationsSettingsProps = 
           />
 
           {browser && <BrowserPermissionRow />}
+
+          {localBrowser && <ResponseReadyProfileDefaultRow key={defaultProfile} profile={defaultProfile} />}
 
           {localBrowser && (pushStatus?.available || pushError) && (
             <ListRow

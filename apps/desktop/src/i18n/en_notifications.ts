@@ -7,9 +7,16 @@ export const enNotifications = {
   webPushPolicy: {
     title: 'Response ready',
     inherit: 'Inherit (off)',
+    inheritOn: 'Inherit (on)',
     on: 'On',
     off: 'Off',
     failed: 'The conversation notification policy could not be saved.'
+  },
+  webPushProfileDefault: {
+    label: 'Response ready default ({profile})',
+    description: 'Shared across devices. Used by conversations set to Inherit.',
+    failed: 'The profile default could not be saved.',
+    unavailable: 'The profile default could not be read.'
   },
   webPushPreview: {
     label: 'Show message previews',

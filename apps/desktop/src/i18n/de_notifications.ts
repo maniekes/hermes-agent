@@ -7,9 +7,16 @@ export const deNotifications = {
   webPushPolicy: {
     title: 'Antwort fertig',
     inherit: 'Erben (aus)',
+    inheritOn: 'Erben (an)',
     on: 'An',
     off: 'Aus',
     failed: 'Die Benachrichtigungseinstellung für dieses Gespräch konnte nicht gespeichert werden.'
+  },
+  webPushProfileDefault: {
+    label: 'Standard für „Antwort fertig“ ({profile})',
+    description: 'Gilt auf allen Geräten für Gespräche, die den Profilstandard übernehmen.',
+    failed: 'Der Profilstandard konnte nicht gespeichert werden.',
+    unavailable: 'Der Profilstandard konnte nicht gelesen werden.'
   },
   webPushPreview: {
     label: 'Nachrichtenvorschau anzeigen',

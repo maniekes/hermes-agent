@@ -7,9 +7,16 @@ export const esNotifications = {
   webPushPolicy: {
     title: 'Respuesta lista',
     inherit: 'Heredar (desactivado)',
+    inheritOn: 'Heredar (activado)',
     on: 'Activado',
     off: 'Desactivado',
     failed: 'No se pudo guardar la configuración de avisos de esta conversación.'
+  },
+  webPushProfileDefault: {
+    label: 'Aviso de respuesta lista por defecto ({profile})',
+    description: 'Se comparte entre dispositivos y se aplica a las conversaciones que heredan el ajuste del perfil.',
+    failed: 'No se pudo guardar el ajuste predeterminado del perfil.',
+    unavailable: 'No se pudo leer el ajuste predeterminado del perfil.'
   },
   webPushPreview: {
     label: 'Mostrar vistas previas',

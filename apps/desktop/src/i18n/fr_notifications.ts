@@ -7,9 +7,16 @@ export const frNotifications = {
   webPushPolicy: {
     title: 'Réponse prête',
     inherit: 'Hériter (désactivé)',
+    inheritOn: 'Hériter (activé)',
     on: 'Activé',
     off: 'Désactivé',
     failed: 'Le réglage des notifications de cette conversation n’a pas pu être enregistré.'
+  },
+  webPushProfileDefault: {
+    label: 'Alerte de réponse prête par défaut ({profile})',
+    description: 'Ce réglage est partagé entre appareils et s’applique aux conversations qui héritent du réglage du profil.',
+    failed: 'Impossible d’enregistrer le réglage par défaut du profil.',
+    unavailable: 'Impossible de lire le réglage par défaut du profil.'
   },
   webPushPreview: {
     label: 'Afficher les aperçus des messages',

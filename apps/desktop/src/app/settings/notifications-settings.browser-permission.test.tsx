@@ -7,15 +7,23 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { browserPushStatus, disableBrowserPush, enableBrowserPush, setBrowserPushPreview, testBrowserPush } from '@/lib/browser-web-push'
 import { $nativeNotifyPrefs, sendTestNativeNotification, setNativeNotifyEnabled, setNativeNotifyKind } from '@/store/native-notifications'
 import { notify } from '@/store/notifications'
+import { $activeGatewayProfile } from '@/store/profile'
 
 import { NotificationsSettings } from './notifications-settings'
+
+const { readProfileDefault, writeProfileDefault } = vi.hoisted(() => ({
+  readProfileDefault: vi.fn(),
+  writeProfileDefault: vi.fn()
+}))
 
 vi.mock('@/lib/browser-web-push', () => ({
   browserPushStatus: vi.fn(),
   disableBrowserPush: vi.fn(),
   enableBrowserPush: vi.fn(),
+  readProfileDefault,
   setBrowserPushPreview: vi.fn(),
-  testBrowserPush: vi.fn()
+  testBrowserPush: vi.fn(),
+  writeProfileDefault
 }))
 vi.mock('@/lib/host-capabilities', () => ({ hostHas: (name: string) => name === 'browserNotifications' }))
 vi.mock('@/store/notifications', () => ({ notify: vi.fn() }))
@@ -42,6 +50,10 @@ class FakeNotification {
 }
 
 beforeEach(() => {
+  $activeGatewayProfile.set('default')
+  $nativeNotifyPrefs.set({ ...$nativeNotifyPrefs.get(), enabled: true })
+  readProfileDefault.mockReset().mockResolvedValue(undefined)
+  writeProfileDefault.mockReset()
   vi.mocked(browserPushStatus).mockReset().mockResolvedValue({ active: false, available: false })
   vi.mocked(disableBrowserPush).mockReset().mockResolvedValue(undefined)
   vi.mocked(enableBrowserPush).mockReset().mockResolvedValue(undefined)
@@ -56,6 +68,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup()
+  $activeGatewayProfile.set('default')
   vi.unstubAllGlobals()
 })
 
@@ -253,4 +266,64 @@ it('shows only server-confirmed preview consent and preserves it on a failed upd
   await act(async () => { fireEvent.click(privacy) })
   expect(privacy.getAttribute('aria-checked')).toBe('true')
   expect(notify).toHaveBeenLastCalledWith({ kind: 'error', message: expect.stringMatching(/could not be saved/i) })
+})
+
+it('shows the named profile default with neither device enrollment nor master enabled', async () => {
+  $activeGatewayProfile.set('beta')
+  $nativeNotifyPrefs.set({ ...$nativeNotifyPrefs.get(), enabled: false })
+  readProfileDefault.mockResolvedValueOnce({ enabled: false, revision: 1 })
+    .mockResolvedValueOnce({ enabled: true, revision: 2 })
+  let resolveWrite!: () => void
+  writeProfileDefault.mockReturnValueOnce(new Promise<void>(resolve => { resolveWrite = resolve }))
+  renderAlerts()
+  const row = await screen.findByRole('switch', { name: 'Response ready default (beta)' })
+  const master = screen.getByRole('switch', { name: 'Enable notifications' })
+  expect(row.getAttribute('aria-checked')).toBe('false')
+  expect(master.getAttribute('aria-checked')).toBe('false')
+  expect(readProfileDefault).toHaveBeenCalledWith('beta')
+
+  fireEvent.click(row)
+  expect(writeProfileDefault).toHaveBeenCalledWith('beta', true, 1)
+  expect(row.getAttribute('aria-checked')).toBe('false')
+  await act(async () => resolveWrite())
+  expect(row.getAttribute('aria-checked')).toBe('true')
+  expect(master.getAttribute('aria-checked')).toBe('false')
+  expect(enableBrowserPush).not.toHaveBeenCalled()
+})
+
+it('reconciles a profile conflict and ignores late focus and previous-profile reads', async () => {
+  $activeGatewayProfile.set('beta')
+  let finishFocus!: (value: unknown) => void
+  let finishProfile!: (value: unknown) => void
+  readProfileDefault.mockResolvedValueOnce({ enabled: false, revision: 1 })
+    .mockReturnValueOnce(new Promise(resolve => { finishFocus = resolve }))
+    .mockResolvedValueOnce({ enabled: true, revision: 2 })
+    .mockReturnValueOnce(new Promise(resolve => { finishProfile = resolve }))
+    .mockResolvedValueOnce({ enabled: false, revision: 0 })
+  writeProfileDefault.mockRejectedValueOnce(new Error('409: conflict'))
+  renderAlerts()
+  const row = await screen.findByRole('switch', { name: 'Response ready default (beta)' })
+  fireEvent.focus(window)
+  await act(async () => { fireEvent.click(row) })
+  await act(async () => finishFocus({ enabled: false, revision: 1 }))
+  expect(row.getAttribute('aria-checked')).toBe('true')
+  expect(writeProfileDefault).toHaveBeenCalledTimes(1)
+  expect(notify).toHaveBeenCalledWith(expect.objectContaining({ kind: 'error' }))
+
+  fireEvent.focus(window)
+  await act(async () => { $activeGatewayProfile.set('alpha') })
+  await act(async () => finishProfile({ enabled: true, revision: 8 }))
+  expect(screen.queryByRole('switch', { name: 'Response ready default (beta)' })).toBeNull()
+  expect(screen.getByRole('switch', { name: 'Response ready default (alpha)' }).getAttribute('aria-checked')).toBe('false')
+})
+
+it('shows an unavailable status after failed profile default readback', async () => {
+  readProfileDefault.mockResolvedValueOnce({ enabled: false, revision: 1 })
+    .mockRejectedValueOnce(new Error('unavailable'))
+  writeProfileDefault.mockRejectedValueOnce(new Error('unavailable'))
+  renderAlerts()
+  const row = await screen.findByRole('switch', { name: 'Response ready default (default)' })
+  await act(async () => { fireEvent.click(row) })
+  expect(screen.queryByRole('switch', { name: 'Response ready default (default)' })).toBeNull()
+  expect(screen.getByText('The profile default could not be read.')).toBeTruthy()
 })

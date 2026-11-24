@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { browserPushStatus, consumeBrowserPushLink, refreshExistingBrowserPushWorker } from './browser-web-push'
+import { browserPushStatus, consumeBrowserPushLink, readProfileDefault, refreshExistingBrowserPushWorker, writeProfileDefault } from './browser-web-push'
 
 describe('Web Push conversation URL', () => {
   it('turns the query restored by login into the existing profile-scoped chat route', () => {
@@ -94,5 +94,45 @@ describe('existing Web Push worker updates', () => {
     expect(registration.update).not.toHaveBeenCalled()
     expect(serviceWorker.getRegistration).toHaveBeenCalledTimes(3)
     expect(serviceWorker.register).not.toHaveBeenCalled()
+  })
+})
+
+describe('Response ready profile default', () => {
+  afterEach(() => vi.unstubAllGlobals())
+
+  it('addresses a single named profile through the cookie API without installation headers', async () => {
+    vi.stubGlobal('__HERMES_AUTH_REQUIRED__', true)
+    vi.stubGlobal('__HERMES_BASE_PATH__', '/prefix')
+
+    const fetch = vi.fn()
+      .mockResolvedValueOnce(Response.json({ enabled: false, revision: 3 }))
+      .mockResolvedValueOnce(Response.json({ enabled: true, revision: 4 }))
+
+    vi.stubGlobal('fetch', fetch)
+    expect(await readProfileDefault('beta')).toEqual({ enabled: false, revision: 3 })
+    await writeProfileDefault('beta', true, 3)
+
+    for (const [url, options] of fetch.mock.calls) {
+      expect(url.pathname).toBe('/prefix/api/webapp/web-push/profile-default')
+      expect(url.searchParams.get('profile')).toBe('beta')
+      expect(options.credentials).toBe('same-origin')
+      expect(options.headers.has('X-Hermes-Push-Installation')).toBe(false)
+    }
+
+    expect(fetch.mock.calls[1][1]).toMatchObject({
+      body: JSON.stringify({ enabled: true, expected_revision: 3 }),
+      method: 'POST'
+    })
+  })
+
+  it('distinguishes a legacy endpoint from an unavailable selected profile', async () => {
+    vi.stubGlobal('__HERMES_AUTH_REQUIRED__', true)
+    vi.stubGlobal('fetch', vi.fn()
+      .mockResolvedValueOnce(new Response(null, { status: 404 }))
+      .mockResolvedValueOnce(new Response(null, { status: 405 }))
+      .mockResolvedValueOnce(new Response(null, { status: 503 })))
+    expect(await readProfileDefault('beta')).toBeUndefined()
+    expect(await readProfileDefault('beta')).toBeUndefined()
+    await expect(readProfileDefault('beta')).rejects.toThrow('503:')
   })
 })

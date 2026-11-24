@@ -218,9 +218,16 @@ export const zhHantSettings = {
       webPushPolicy: {
         title: '回覆已就緒',
         inherit: '繼承（關閉）',
+        inheritOn: '繼承（開啟）',
         on: '開啟',
         off: '關閉',
         failed: '無法儲存此對話的通知設定。'
+      },
+      webPushProfileDefault: {
+        label: '回覆就緒通知預設值（{profile}）',
+        description: '在裝置之間共用，適用於繼承此設定檔預設值的對話。',
+        failed: '無法儲存設定檔的預設值。',
+        unavailable: '無法讀取設定檔的預設值。'
       },
       webPushPreview: {
         label: '顯示訊息預覽',

@@ -14,8 +14,46 @@ export interface WebPushStatus {
   needsRepair?: boolean
 }
 
+export interface ResponseReadyProfileDefault {
+  enabled: boolean
+  revision: number
+}
+
 const unavailable = { active: false, available: false }
 const path = '/api/webapp/web-push'
+
+export async function readProfileDefault(profile: string): Promise<ResponseReadyProfileDefault | undefined> {
+  const bootstrap = browserBootstrap()
+
+  if (!bootstrap?.authRequired) { return undefined }
+
+  try {
+    const value = await browserApi<ResponseReadyProfileDefault>(bootstrap, {
+      method: 'GET', path: `${path}/profile-default`, profile, timeoutMs: 5000
+    })
+
+    if (typeof value?.enabled !== 'boolean' || !Number.isSafeInteger(value.revision) || value.revision < 0) {
+      throw new Error('Invalid Response ready profile default')
+    }
+
+    return value
+  } catch (error) {
+    if (error instanceof Error && /^(404|405):/.test(error.message)) { return undefined }
+
+    throw error
+  }
+}
+
+export async function writeProfileDefault(profile: string, enabled: boolean, expectedRevision: number) {
+  const bootstrap = browserBootstrap()
+
+  if (!bootstrap?.authRequired) { throw new Error('Webapp sign-in required') }
+
+  await browserApi(bootstrap, {
+    body: { enabled, expected_revision: expectedRevision },
+    method: 'POST', path: `${path}/profile-default`, profile, timeoutMs: 5000
+  })
+}
 
 function request<T>(profile?: null | string, action?: string, body?: unknown) {
   const bootstrap = browserBootstrap()

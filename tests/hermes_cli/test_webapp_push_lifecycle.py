@@ -622,3 +622,200 @@ def test_conversation_policy_defaults_off_and_on_uses_only_an_existing_admission
     assert _act(browser, "disable-all", "beta").json() == {"applied": True}
     settle(submit(PHONE, "master-disabled"))
     assert not push.deliver_one(beta, "beta", generation())
+
+
+def test_profile_response_ready_default_is_shared_revisioned_and_isolated(fixture, gated, monkeypatch):
+    path = PATH + "/profile-default"
+    browser = fixture.browser
+    origin = {"Origin": str(browser.base_url).rstrip("/")}
+    other = gated.browser()
+    _sign_in_with_password(other)
+
+    def get(client, profile):
+        return client.get(path, params={"profile": profile})
+
+    def set_default(client, profile, enabled, revision, headers=origin):
+        return client.post(path, headers=headers, params={"profile": profile},
+                           json={"enabled": enabled, "expected_revision": revision})
+
+    def create(client, name, profile):
+        return _socket_request(client, PHONE, "session.create",
+                               {"request_id": name, "model": "gpt-4o-mini", "source": "gui"}, profile)["session_id"]
+
+    assert get(browser, "beta").json() == {"enabled": False, "revision": 0}
+    assert get(browser, "default").json() == {"enabled": False, "revision": 0}
+    assert get(browser, "absent").status_code == 503
+    assert browser.get(path).status_code == 422
+    assert browser.get(path, params=[("profile", "beta"), ("profile", "default")]).status_code == 400
+    assert set_default(gated.browser(), "beta", True, 0).status_code == 401
+    assert set_default(browser, "beta", True, 0, {"Origin": "https://other.example"}).status_code == 403
+    assert set_default(browser, "beta", True, 0, {}).status_code == 403
+    with monkeypatch.context() as expired:
+        expired.setattr(fixture.beta, "epoch", fixture.beta.epoch - 1)
+        assert set_default(browser, "beta", True, 0).status_code == 503
+    assert get(browser, "beta").json() == {"enabled": False, "revision": 0}
+    inherited = create(browser, "existing-inherit", "beta")
+    explicit_on = create(browser, "explicit-on", "beta")
+    explicit_off = create(browser, "explicit-off", "beta")
+    _response_ready_policy(browser, explicit_on, "on")
+    _response_ready_policy(browser, explicit_off, "off")
+
+    def assert_policy(client, sid, mode, default, effective):
+        policy = _response_ready_policy(client, sid)
+        assert (policy["mode"], policy["default"], policy["effective"]) == (mode, default, effective)
+
+    assert_policy(browser, inherited, "inherit", "off", "off")
+    assert set_default(browser, "beta", True, 0).json() == {"enabled": True, "revision": 1}
+    assert get(other, "beta").json() == {"enabled": True, "revision": 1}
+    assert get(other, "default").json() == {"enabled": False, "revision": 0}
+    assert set_default(other, "beta", False, 0).status_code == 409
+    assert set_default(browser, "absent", False, 0).status_code == 503
+    assert_policy(other, inherited, "inherit", "on", "on")
+    fresh = create(other, "new-inherit", "beta")
+    assert_policy(browser, fresh, "inherit", "on", "on")
+    assert_policy(browser, explicit_on, "on", "on", "on")
+    assert_policy(browser, explicit_off, "off", "on", "off")
+    _response_ready_policy(browser, explicit_off, "inherit")
+    assert_policy(browser, explicit_off, "inherit", "on", "on")
+    assert set_default(other, "beta", False, 1).json() == {"enabled": False, "revision": 2}
+    assert_policy(browser, inherited, "inherit", "off", "off")
+    assert_policy(browser, explicit_on, "on", "off", "on")
+    with SessionDB(fixture.beta.db.db_path) as reopened:
+        from gateway.web_push.conversation import read_policy
+
+        with reopened._read_ctx() as conn:
+            assert read_policy(conn, fresh)[1] == {"mode": "inherit", "default": "off", "effective": "off"}
+
+
+def test_profile_default_cancels_only_inherited_queue_and_retry(fixture, endpoint, monkeypatch):
+    from hermes_state_runtime import claim_session_input, settle_session_input
+
+    browser, beta, push = fixture.browser, fixture.beta, fixture.runner.web_push
+    monkeypatch.setattr(beta, "_schedule_admitted", lambda *_: None)
+    assert _enroll(browser, endpoint, profile="beta").status_code == 200
+
+    def default(enabled, revision):
+        return _act(browser, "profile-default", "beta", {"enabled": enabled, "expected_revision": revision})
+
+    def create(key):
+        return _socket_request(browser, PHONE, "session.create", {
+            "request_id": key, "model": "gpt-4o-mini", "source": "gui",
+        })["session_id"]
+
+    def accept(sid, request, device=PHONE):
+        result = _socket_request(browser, device, "prompt.submit", {
+            "session_id": sid, "text": "synthetic", "submission_id": request,
+        })
+        row = claim_session_input(beta.db, epoch=beta.epoch, session_id=sid)
+        assert row["admission_id"] == result["admission_id"]
+
+        return row
+
+    def complete(row):
+        settle_session_input(beta.db, epoch=beta.epoch, admission_id=row["admission_id"],
+                             generation=row["generation"], outcome="completed")
+        _due_now(beta)
+        return row["admission_id"]
+
+    def settle(sid, request, device=PHONE):
+        return complete(accept(sid, request, device))
+
+    inherited, explicit = create("queue-inherit"), create("queue-explicit")
+    active_without_target = accept(inherited, "no-recipient", DESKTOP)
+    assert default(True, 0).status_code == 200
+    complete(active_without_target)
+    assert not push.deliver_one(beta, "beta", generation())
+
+    attempts = []
+    send = push.send
+    monkeypatch.setattr(push, "send", lambda *_args, **_kwargs: (
+        attempts.append(True) or SimpleNamespace(status_code=503, headers={})))
+    retry = settle(inherited, "retry-inherited")
+    assert push.deliver_one(beta, "beta", generation())
+    assert len(attempts) == 1
+    monkeypatch.setattr(push, "send", send)
+
+    _response_ready_policy(browser, inherited, "on")
+    queued = settle(inherited, "switch-to-inherit")
+    _response_ready_policy(browser, inherited, "inherit")
+    with beta.db._read_ctx() as conn:
+        assert conn.execute("SELECT due_at FROM web_push_outbox WHERE id=?", (queued,)).fetchone()[0] is not None
+    _response_ready_policy(browser, explicit, "on")
+    kept = settle(explicit, "keep-explicit")
+    assert default(False, 1).status_code == 200
+    with beta.db._read_ctx() as conn:
+        rows = {row["id"]: row["due_at"] for row in conn.execute(
+            "SELECT id,due_at FROM web_push_outbox WHERE id IN (?,?,?)", (retry, queued, kept))}
+    assert rows[retry] is rows[queued] is None
+    assert rows[kept] is not None
+    active_with_target = accept(inherited, "already-started-with-original-target")
+    assert default(True, 2).status_code == 200
+    _due_now(beta)
+    assert push.deliver_one(beta, "beta", generation())
+    assert not push.deliver_one(beta, "beta", generation())
+    assert [payload["id"] for _, payload in fixture.sends] == [kept]
+    active = complete(active_with_target)
+    assert push.deliver_one(beta, "beta", generation())
+    assert fixture.sends[-1][1]["id"] == active
+
+    _response_ready_policy(browser, explicit, "inherit")
+    preserved = settle(explicit, "inherit-on")
+    assert push.deliver_one(beta, "beta", generation())
+    assert fixture.sends[-1][1]["id"] == preserved
+    assert _act(browser, "disable-all", "beta").json() == {"applied": True}
+    settle(inherited, "device-off")
+    assert not push.deliver_one(beta, "beta", generation())
+    assert _enroll(browser, endpoint, profile="beta").status_code == 200
+    settle(inherited, "logout-with-inherited-on")
+    assert browser.post("/auth/logout", headers=_headers(PHONE), follow_redirects=False).status_code == 302
+    push.deliver_one(beta, "beta", generation())
+    assert [payload["id"] for _, payload in fixture.sends] == [kept, active, preserved]
+
+
+def test_profile_default_resolves_compressed_outbox_segments_through_their_roots(
+        fixture, endpoint, monkeypatch):
+    from hermes_state_local import local_lineage_owner
+    from hermes_state_runtime import admit_session_input, claim_session_input, settle_session_input
+
+    browser, beta, push = fixture.browser, fixture.beta, fixture.runner.web_push
+    monkeypatch.setattr(beta, "_schedule_admitted", lambda *_: None)
+    assert _enroll(browser, endpoint, profile="beta").status_code == 200
+    assert _act(browser, "profile-default", "beta", {"enabled": True, "expected_revision": 0}).status_code == 200
+    device = installation_digest(PHONE)
+    login = generation()
+    with beta.db._read_ctx() as conn:
+        owner = conn.execute("SELECT owner FROM web_push_subscriptions WHERE device=?", (device,)).fetchone()[0]
+    bind = push.binding(beta, device, owner, login)
+    assert bind is not None
+
+    def complete_compressed(mode):
+        root = _socket_request(browser, PHONE, "session.create", {
+            "request_id": "compressed-" + mode, "model": "gpt-4o-mini", "source": "gui",
+        })["session_id"]
+        if mode == "on":
+            _response_ready_policy(browser, root, mode)
+        child = "synthetic-tip-" + mode
+        beta.db.publish_compression_child(parent_session_id=root, child_session_id=child, source="gui",
+                                          messages=[{"role": "user", "content": "synthetic"}],
+                                          require_compression_lease=False)
+        with beta.db._read_ctx() as conn:
+            assert local_lineage_owner(conn, child) == root
+        assert beta.db.get_session(child)["response_ready"] == "inherit"
+        admitted = admit_session_input(beta.db, epoch=beta.epoch, principal_id=owner, session_id=child,
+                                       request_id="post-compression", payload={"text": "synthetic"},
+                                       _on_new_admission=bind)
+        started = claim_session_input(beta.db, epoch=beta.epoch, session_id=child)
+        assert started["admission_id"] == admitted["admission_id"]
+        settle_session_input(beta.db, epoch=beta.epoch, admission_id=admitted["admission_id"],
+                             generation=started["generation"], outcome="completed")
+        return admitted["admission_id"]
+
+    inherited, explicit = complete_compressed("inherit"), complete_compressed("on")
+    assert _act(browser, "profile-default", "beta", {"enabled": False, "expected_revision": 1}).status_code == 200
+    _due_now(beta)
+    assert push.deliver_one(beta, "beta", login)
+    assert not push.deliver_one(beta, "beta", login)
+    assert [payload["id"] for _, payload in fixture.sends] == [explicit]
+    with beta.db._read_ctx() as conn:
+        assert conn.execute("SELECT due_at FROM web_push_outbox WHERE id=?",
+                            (inherited,)).fetchone()[0] is None
