@@ -6,6 +6,7 @@ import { clearWebappSession, seedWebappSession } from '@/test/webapp-session'
 import { browserOpensWebappWindows } from '@/test/webapp-windows'
 
 import { installBrowserDesktopBridge } from './browser-desktop-bridge'
+import { refreshExistingBrowserPushWorker } from './browser-web-push'
 import { desktopGit } from './desktop-git'
 import { openLink } from './external-link'
 import { resolveDesktopGatewayWsUrl } from './gateway-ws-url'
@@ -21,7 +22,12 @@ type MutableWindow = Window & {
 
 const mutableWindow = () => window as unknown as MutableWindow
 
+let clearWorkerListeners = () => {}
+
 afterEach(() => {
+  clearWorkerListeners()
+
+  clearWorkerListeners = () => {}
   const win = mutableWindow()
   delete win.__HERMES_AUTH_REQUIRED__
   delete win.__HERMES_BASE_PATH__
@@ -37,38 +43,141 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 
+function existingPushWorker() {
+  const win = mutableWindow()
+  win.__HERMES_AUTH_REQUIRED__ = true
+  win.__HERMES_UI_SURFACE__ = 'webapp'
+  win.__HERMES_BASE_PATH__ = '/hermes'
+  vi.stubGlobal('isSecureContext', true)
+  vi.stubGlobal('Notification', { permission: 'granted' })
+
+  let visibility: DocumentVisibilityState = 'visible'
+  vi.spyOn(document, 'visibilityState', 'get').mockImplementation(() => visibility)
+
+  const registration = {
+    active: { scriptURL: new URL('/hermes/hermes-notifications-sw.js', window.location.origin).href, state: 'activated' },
+    pushManager: { getSubscription: vi.fn().mockResolvedValue({}) },
+    scope: new URL('/hermes/hermes-notifications/', window.location.origin).href,
+    update: vi.fn().mockResolvedValue(undefined)
+  }
+
+  const serviceWorker = { getRegistration: vi.fn().mockResolvedValue(registration), register: vi.fn() }
+  vi.stubGlobal('navigator', { serviceWorker })
+
+  const windowEvents = vi.spyOn(window, 'addEventListener')
+  const documentEvents = vi.spyOn(document, 'addEventListener')
+  const onlineListeners = () => windowEvents.mock.calls.filter(([type]) => type === 'online')
+
+  clearWorkerListeners = () => {
+    for (const [type, listener] of onlineListeners()) { window.removeEventListener(type, listener) }
+
+    for (const [type, listener] of documentEvents.mock.calls) {
+      if (type === 'visibilitychange') { document.removeEventListener(type, listener) }
+    }
+  }
+
+  return { onlineListeners, registration, serviceWorker, setVisibility: (state: DocumentVisibilityState) => {
+    visibility = state
+  } }
+}
+
 describe('browser-hosted Desktop bridge', () => {
   it('refreshes the enrolled worker on Webapp boot and only when returning to a visible page', async () => {
-    const win = mutableWindow()
-    win.__HERMES_AUTH_REQUIRED__ = true
-    win.__HERMES_UI_SURFACE__ = 'webapp'
-    win.__HERMES_BASE_PATH__ = '/hermes'
-    vi.stubGlobal('isSecureContext', true)
-    vi.stubGlobal('Notification', { permission: 'granted' })
-
-    let visibility = 'visible'
-    vi.spyOn(document, 'visibilityState', 'get').mockImplementation(() => visibility as DocumentVisibilityState)
-
-    const registration = {
-      active: { scriptURL: new URL('/hermes/hermes-notifications-sw.js', window.location.origin).href, state: 'activated' },
-      pushManager: { getSubscription: vi.fn().mockResolvedValue({}) },
-      scope: new URL('/hermes/hermes-notifications/', window.location.origin).href,
-      update: vi.fn().mockResolvedValue(undefined)
-    }
-
-    const serviceWorker = { getRegistration: vi.fn().mockResolvedValue(registration), register: vi.fn() }
-    vi.stubGlobal('navigator', { serviceWorker })
+    const { registration, serviceWorker, setVisibility } = existingPushWorker()
 
     expect(installBrowserDesktopBridge()).toBe(true)
     await vi.waitFor(() => expect(registration.update).toHaveBeenCalledOnce())
-    visibility = 'hidden'
+    setVisibility('hidden')
     document.dispatchEvent(new Event('visibilitychange'))
     expect(serviceWorker.getRegistration).toHaveBeenCalledOnce()
 
-    visibility = 'visible'
+    setVisibility('visible')
     document.dispatchEvent(new Event('visibilitychange'))
     await vi.waitFor(() => expect(registration.update).toHaveBeenCalledTimes(2))
     expect(serviceWorker.register).not.toHaveBeenCalled()
+  })
+
+  it.each(['after failure', 'while pending', 'just rejected'])('retries a visible update when online arrives %s', async timing => {
+    const { onlineListeners, registration, serviceWorker } = existingPushWorker()
+    let fail!: (error: Error) => void
+    let finish!: () => void
+    registration.update.mockReturnValueOnce(new Promise((_, reject) => { fail = reject }))
+      .mockReturnValueOnce(new Promise<void>(resolve => { finish = resolve }))
+    const reconnect = () => window.dispatchEvent(new Event('online'))
+
+    expect(installBrowserDesktopBridge()).toBe(true)
+    expect(installBrowserDesktopBridge()).toBe(false)
+    await vi.waitFor(() => expect(registration.update).toHaveBeenCalledOnce())
+
+    if (timing === 'after failure') {
+      fail(new Error('503'))
+      await refreshExistingBrowserPushWorker()
+    } else if (timing === 'just rejected') {
+      fail(new Error('503'))
+    }
+
+    reconnect()
+    reconnect()
+
+    if (timing === 'while pending') {
+      expect(registration.update).toHaveBeenCalledOnce()
+      fail(new Error('503'))
+    }
+
+    await vi.waitFor(() => expect(registration.update).toHaveBeenCalledTimes(2), { timeout: 600 })
+    reconnect()
+    reconnect()
+    finish()
+    await refreshExistingBrowserPushWorker()
+
+    expect(registration.update).toHaveBeenCalledTimes(2)
+    expect(onlineListeners()).toHaveLength(1)
+    expect(serviceWorker.register).not.toHaveBeenCalled()
+  })
+
+  it('ignores online when hidden, including a deferred retry after the page becomes hidden', async () => {
+    const { registration, serviceWorker, setVisibility } = existingPushWorker()
+    let fail!: (error: Error) => void
+    registration.update.mockReturnValueOnce(new Promise((_, reject) => { fail = reject }))
+    expect(installBrowserDesktopBridge()).toBe(true)
+    await vi.waitFor(() => expect(registration.update).toHaveBeenCalledOnce())
+
+    window.dispatchEvent(new Event('online'))
+    setVisibility('hidden')
+    fail(new Error('503'))
+    await refreshExistingBrowserPushWorker()
+    window.dispatchEvent(new Event('online'))
+    expect(serviceWorker.getRegistration).toHaveBeenCalledOnce()
+
+    setVisibility('visible')
+    document.dispatchEvent(new Event('visibilitychange'))
+    await vi.waitFor(() => expect(registration.update).toHaveBeenCalledTimes(2))
+  })
+
+  it.each(['native', 'dashboard', 'missing registration'])('does not update the worker on online with %s', async mode => {
+    const { onlineListeners, registration, serviceWorker } = existingPushWorker()
+    const win = mutableWindow()
+
+    if (mode === 'native') { win.hermesDesktop = {} as Window['hermesDesktop'] }
+
+    if (mode === 'dashboard') { win.__HERMES_UI_SURFACE__ = 'dashboard' }
+
+    if (mode === 'missing registration') { serviceWorker.getRegistration.mockResolvedValue(undefined) }
+
+    expect(installBrowserDesktopBridge()).toBe(mode !== 'native')
+
+    if (mode === 'missing registration') { await refreshExistingBrowserPushWorker() }
+    window.dispatchEvent(new Event('online'))
+
+    if (mode === 'missing registration') {
+      await vi.waitFor(() => expect(serviceWorker.getRegistration).toHaveBeenCalledTimes(2), { timeout: 600 })
+    } else {
+      expect(serviceWorker.getRegistration).not.toHaveBeenCalled()
+    }
+
+    expect(registration.update).not.toHaveBeenCalled()
+    expect(serviceWorker.register).not.toHaveBeenCalled()
+    expect(onlineListeners()).toHaveLength(mode === 'missing registration' ? 1 : 0)
   })
 
   it('does not make network requests to resolve link titles', async () => {

@@ -90,12 +90,19 @@ async function existingBrowserSubscription() {
   return registration ? registration.pushManager.getSubscription() : undefined
 }
 
-let existingWorkerUpdate: Promise<void> | undefined
+let existingWorkerUpdate: Promise<boolean> | undefined
 
-export async function refreshExistingBrowserPushWorker(): Promise<void> {
+export async function refreshExistingBrowserPushWorker(retryAfterOverlap?: () => boolean): Promise<void> {
   const bootstrap = browserBootstrap()
 
   if (!bootstrap?.authRequired || browserNotificationPermission() !== 'granted') { return }
+
+  if (existingWorkerUpdate && retryAfterOverlap) {
+    // An online event may arrive before the previous attempt notices that it failed.
+    if (!(await existingWorkerUpdate) && retryAfterOverlap()) { await refreshExistingBrowserPushWorker() }
+
+    return
+  }
 
   // This sub-scope does not control app navigation, so boot can leave an older worker active.
   existingWorkerUpdate ??= (async () => {
@@ -104,8 +111,9 @@ export async function refreshExistingBrowserPushWorker(): Promise<void> {
     if (registration && await registration.pushManager.getSubscription()) {
       await updateExistingNotificationWorker(registration, bootstrap.basePath)
     }
-  })().catch(() => {
+  })().then(() => true, () => {
     // An update can fail offline. Enrollment and privacy readback remain independent.
+    return false
   }).finally(() => { existingWorkerUpdate = undefined })
 
   await existingWorkerUpdate

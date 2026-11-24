@@ -40,8 +40,10 @@ function isServingWebapp(): boolean {
   return (window as Window & { __HERMES_UI_SURFACE__?: string }).__HERMES_UI_SURFACE__ === 'webapp'
 }
 
-function refreshVisiblePushWorker() {
-  if (document.visibilityState === 'visible') { void refreshExistingBrowserPushWorker() }
+function refreshVisiblePushWorker(event?: Event) {
+  const isVisible = () => document.visibilityState === 'visible'
+
+  if (isVisible()) { void refreshExistingBrowserPushWorker(event?.type === 'online' ? isVisible : undefined) }
 }
 
 export function installBrowserDesktopBridge(): boolean {
@@ -58,6 +60,7 @@ export function installBrowserDesktopBridge(): boolean {
   if (bootstrap.authRequired && isServingWebapp()) {
     refreshVisiblePushWorker()
     document.addEventListener('visibilitychange', refreshVisiblePushWorker)
+    window.addEventListener('online', refreshVisiblePushWorker)
   }
 
   const pushLink = consumeBrowserPushLink(new URL(window.location.href))
