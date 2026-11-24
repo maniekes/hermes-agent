@@ -5,6 +5,7 @@ import re
 from markdown_it import MarkdownIt
 
 from agent.think_scrubber import THINK_TAG_NAMES
+from gateway.media_directives import MEDIA_PATH_START, MEDIA_TAG_CLEANUP_RE
 from gateway.web_push.store import PREVIEW_ANSWER_SOURCE_LIMIT, PREVIEW_TITLE_SOURCE_LIMIT
 
 _HIDDEN_NAMES = (*THINK_TAG_NAMES, "analysis", "redacted_thinking", "script", "style", "template",
@@ -12,7 +13,10 @@ _HIDDEN_NAMES = (*THINK_TAG_NAMES, "analysis", "redacted_thinking", "script", "s
                  "function", "function_call", "function_calls")
 _HIDDEN_TAG = re.compile(r"</?((?:[\w.-]+:)?(?:" + "|".join(_HIDDEN_NAMES) + r"))(?=[\s/>])[^>]*>",
                          re.IGNORECASE)
-_MEDIA = re.compile(r"\bMEDIA:[^\n]*|\[\[(?:audio_as_voice|as_document)\]\]", re.IGNORECASE)
+_MEDIA_FALLBACK = re.compile(
+    r"""\bMEDIA:(?:\s*(?=[`"']|""" + MEDIA_PATH_START + r"""))?[^\r\n]*|\[\[(?:audio_as_voice|as_document)\]\]""",
+    re.IGNORECASE,
+)
 _URL = re.compile(r"\b(?:https?://|data:)[^\s<>]+", re.IGNORECASE)
 _AMBIGUOUS_HIDDEN = re.compile(r"`|<!--|(?<!\w)['\"]")
 _UNSAFE_CHARS = re.compile(r"[\x00-\x08\x0e-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069\ud800-\udfff]")
@@ -38,8 +42,24 @@ def _without_hidden_blocks(text):
     return " ".join(parts)
 
 
+def _inline_text(children):
+    parts = []
+    autolink = False
+    for child in children or ():
+        if child.markup == "autolink":
+            autolink = child.type == "link_open"
+            if autolink:
+                parts.append(" ")
+        elif not autolink and child.type in {"text", "softbreak", "hardbreak", "image", "code_inline"}:
+            parts.append(child.content if child.type == "text" else " ")
+    return "".join(parts)
+
+
 def _plain(text, limit):
-    text = _MEDIA.sub(" ", _without_hidden_blocks(unescape(text or "")))
+    text = _without_hidden_blocks(unescape(text or ""))
+    # Unquoted unknown extensions may require filesystem validation to find the end.
+    # Suppress that value line conservatively, including a path on the following line.
+    text = _MEDIA_FALLBACK.sub(" ", MEDIA_TAG_CLEANUP_RE.sub(" ", text))
     parser = MarkdownIt().enable(["strikethrough", "table"])
     # Parse even non-web links so their destinations can be discarded. Only visible text tokens
     # are used, including link labels. Images, HTML, and inline or fenced code supply no text.
@@ -47,10 +67,7 @@ def _plain(text, limit):
     lines = []
     for token in parser.parse(text):
         if token.type == "inline":
-            lines.append("".join(
-                child.content if child.type == "text" else " "
-                for child in token.children or () if child.type in {"text", "softbreak", "hardbreak", "image", "code_inline"}
-            ))
+            lines.append(_inline_text(token.children))
     visible = _URL.sub(" ", " ".join(lines))
     if "![" in visible:
         # Unresolved image syntax can retain private alt text.

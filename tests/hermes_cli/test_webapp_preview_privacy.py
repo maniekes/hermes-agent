@@ -138,3 +138,50 @@ def test_visible_paths_do_not_restore_technical_attachment_text():
                         "Sprawdź /synthetic/visible.txt.") == {
         "body": "Wynik plik. Sprawdź /synthetic/visible.txt.",
     }
+
+
+@pytest.mark.parametrize(("separator", "path"), [
+    ("\n", "/synthetic/SYNTH_ATTACHMENT_NAME.png"),
+    ("\r\n \t", "/synthetic/SYNTH attachment name.png"),
+    ("\n\n ", '"./SYNTH quoted attachment"'),
+    (" ", r"'C:\Synthetic Work\SYNTH attachment.pdf'"),
+    ("\r\n", "`~/SYNTH attachment`"),
+])
+def test_sender_strips_supported_media_directives_and_keeps_adjacent_prose(fixture, endpoint, monkeypatch, separator, path):
+    from gateway.platforms.base import MEDIA_TAG_CLEANUP_RE
+
+    text = "Przed MEDIA:" + separator + path + " po. ON/OFF działa."
+    assert MEDIA_TAG_CLEANUP_RE.search(text).group("path") == path
+    _consent(fixture, endpoint)
+    sid, admission = _preview_turn(fixture, monkeypatch, text, title=text)
+    assert fixture.runner.web_push.deliver_one(fixture.beta, "beta", generation())
+    assert fixture.sends == [(endpoint, {
+        "kind": "turn", "id": admission, "session": sid, "profile": "beta",
+        "preview": {"title": "Przed po. ON/OFF działa.", "body": "Przed po. ON/OFF działa."},
+    })]
+
+
+def test_preview_omits_ambiguous_media_line_without_losing_following_prose():
+    assert make_preview(None, "Jawne.\nMEDIA:\n/synthetic/extensionless attachment\n"
+                        "Dalej.\nMEDIA:\nZwykłe zdanie.") == {"body": "Jawne. Dalej. Zwykłe zdanie."}
+
+
+def test_sender_omits_automatic_targets_but_keeps_explicit_labels_and_paths(fixture, endpoint, monkeypatch):
+    title = "Raport <file:///synthetic/SYNTH_AUTO_FILE.txt> [etykieta](sandbox:/synthetic/label.txt)"
+    body = ("Wynik <file:///synthetic/SYNTH_AUTO_FILE.txt> <sandbox:/synthetic/SYNTH_AUTO_SANDBOX.png> "
+            "<ftp://example.test/SYNTH_AUTO_FTP> <urn:synthetic:SYNTH_AUTO_URN> "
+            "<SYNTH_AUTO_EMAIL@example.test> <mailto:SYNTH_AUTO_MAILTO@example.test> "
+            "<https://example.test/SYNTH_AUTO_HTTP> [**plik**](file:///synthetic/SYNTH_LABELED_DEST.txt).\n"
+            "<analysis>SYNTH_HIDDEN</analysis> ON/OFF działa. "
+            "file:///synthetic/visible.txt sandbox:/synthetic/visible.png %2Fsynthetic%2Fvisible")
+    _consent(fixture, endpoint)
+    sid, admission = _preview_turn(fixture, monkeypatch, body, title=title)
+    assert fixture.runner.web_push.deliver_one(fixture.beta, "beta", generation())
+    assert fixture.sends == [(endpoint, {
+        "kind": "turn", "id": admission, "session": sid, "profile": "beta",
+        "preview": {
+            "title": "Raport etykieta",
+            "body": ("Wynik plik. ON/OFF działa. "
+                     "file:///synthetic/visible.txt sandbox:/synthetic/visible.png %2Fsynthetic%2Fvisible"),
+        },
+    })]
