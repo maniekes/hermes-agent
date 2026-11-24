@@ -14,61 +14,113 @@ _HIDDEN_NAMES = (*THINK_TAG_NAMES, "analysis", "redacted_thinking", "script", "s
 _HIDDEN_TAG = re.compile(r"</?((?:[\w.-]+:)?(?:" + "|".join(_HIDDEN_NAMES) + r"))(?=[\s/>])[^>]*>",
                          re.IGNORECASE)
 _MEDIA_FALLBACK = re.compile(
-    r"""\bMEDIA:(?:\s*(?=[`"']|""" + MEDIA_PATH_START + r"""))?[^\r\n]*|\[\[(?:audio_as_voice|as_document)\]\]""",
+    r"""MEDIA:(?:\s*(?=[`"']|""" + MEDIA_PATH_START + r"""))?[^\r\n]*|\[\[(?:audio_as_voice|as_document)\]\]""",
     re.IGNORECASE,
 )
+# MarkdownIt replaces source NULs. Only an excluded code_inline token can supply this placeholder.
+_CODE = "\0"
+# Opaque markup and boundaries between cells on one source line are non-whitespace
+# until the media grammar runs. A synthetic space could end a technical path early.
+_OPAQUE = "\x01"
+_MEDIA_CODE_VALUE = re.compile(r"MEDIA:\s*" + _CODE, re.IGNORECASE)
 _URL = re.compile(r"\b(?:https?://|data:)[^\s<>]+", re.IGNORECASE)
 _AMBIGUOUS_HIDDEN = re.compile(r"`|<!--|(?<!\w)['\"]")
+_TITLE_TILDE_FENCE = re.compile(r"(?<!\S)~{3,}")
+_TITLE_UNPAIRED_FENCE = re.compile(r"(?<!\S)`{3,}")
 _UNSAFE_CHARS = re.compile(r"[\x00-\x08\x0e-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069\ud800-\udfff]")
 
 
-def _without_hidden_blocks(text):
-    parts, tags, end = [], [], 0
-    for match in _HIDDEN_TAG.finditer(text):
-        if not tags:
-            parts.append(text[end:match.start()])
-        elif _AMBIGUOUS_HIDDEN.search(text[end:match.start()]):
-            # A literal closing tag in a quote, code span or comment is ambiguous.
-            return ""
-        name = match[1].casefold()
-        if match[0].startswith("</"):
-            if tags and name == tags[-1]:
-                tags.pop()
-        elif not match[0].endswith("/>"):
-            tags.append(name)
-        end = match.end()
-    if not tags:
-        parts.append(text[end:])
-    return " ".join(parts)
+def _opens_hidden(tag):
+    return not (tag[0].startswith("</") or tag[0].endswith("/>"))
 
 
-def _inline_text(children):
-    parts = []
-    autolink = False
-    for child in children or ():
-        if child.markup == "autolink":
-            autolink = child.type == "link_open"
-            if autolink:
-                parts.append(" ")
-        elif not autolink and child.type in {"text", "softbreak", "hardbreak", "image", "code_inline"}:
-            parts.append(child.content if child.type == "text" else " ")
+def _source_tags(text):
+    return _HIDDEN_TAG.finditer(unescape(text))
+
+
+def _hidden_openings(tags):
+    return [tag[1].casefold() for tag in tags if _opens_hidden(tag)]
+
+
+def _content_tokens(blocks):
+    previous_map = None
+    for block in blocks:
+        if block.type == "inline":
+            yield _OPAQUE if block.map is not None and block.map == previous_map else "\n"
+            yield from block.children or ()
+            previous_map = block.map
+        elif block.type in {"fence", "code_block", "html_block"}:
+            yield "\n"
+            yield block
+            previous_map = None
+
+
+def _project(text, blocks, *, title):
+    parts, hidden, openings = [], [], []
+    quoted = False
+    link = None
+    for token in _content_tokens(blocks):
+        if isinstance(token, str):
+            parts.append(token)
+        elif token.type in {"softbreak", "hardbreak"}:
+            parts.append("\n")
+        elif token.type in {"fence", "code_block", "code_inline"}:
+            openings.extend(_hidden_openings(_source_tags(token.info + "\n" + token.content)))
+            if not hidden:
+                parts.append(_CODE if token.type == "code_inline" else _OPAQUE)
+        elif token.type == "link_open":
+            link = token.markup
+        elif token.type == "link_close":
+            if link == "autolink" and not hidden:
+                parts.append(_OPAQUE)
+            link = None
+        elif token.type == "html_inline" and link is None and (tag := _HIDDEN_TAG.fullmatch(token.content)):
+            if quoted:
+                return ""
+            name = tag[1].casefold()
+            if _opens_hidden(tag):
+                openings.append(name)
+                hidden.append(name)
+            elif token.content.startswith("</") and hidden:
+                if hidden.pop() != name:
+                    return ""
+            parts.append(_OPAQUE)
+        elif token.type == "text" and link != "autolink":
+            if _HIDDEN_TAG.search(token.content) or (title and _TITLE_UNPAIRED_FENCE.search(token.content)):
+                return ""
+            if hidden:
+                quoted = quoted or bool(_AMBIGUOUS_HIDDEN.search(token.content))
+            else:
+                parts.append(token.content.replace(_OPAQUE, ""))
+        elif not hidden and token.type in {"image", "html_inline", "html_block"}:
+            parts.append(_OPAQUE)
+
+    # A source opener must be recognized or proven to belong to an excluded code token.
+    # In particular, a parser-opaque HTML block or encoded/attribute tag cannot silently
+    # drop an opener. Only a complete HTML token can close an active region.
+    source_tags = list(_source_tags(text))
+    if openings != _hidden_openings(source_tags):
+        return ""
+    if hidden and any(tag[0].startswith("</") and tag[1].casefold() in hidden for tag in source_tags):
+        return ""  # A suppressed potential closer cannot establish the end.
     return "".join(parts)
 
 
-def _plain(text, limit):
-    text = _without_hidden_blocks(unescape(text or ""))
-    # Unquoted unknown extensions may require filesystem validation to find the end.
-    # Suppress that value line conservatively, including a path on the following line.
-    text = _MEDIA_FALLBACK.sub(" ", MEDIA_TAG_CLEANUP_RE.sub(" ", text))
+def _plain(text, limit, *, title=False):
+    # A persisted title has collapsed whitespace and cannot prove a tilde fence's boundaries.
+    if title and _TITLE_TILDE_FENCE.search(text):
+        return ""
     parser = MarkdownIt().enable(["strikethrough", "table"])
-    # Parse even non-web links so their destinations can be discarded. Only visible text tokens
-    # are used, including link labels. Images, HTML, and inline or fenced code supply no text.
+    # Parse non-web links too so their destinations are discarded and explicit labels remain.
     parser.validateLink = lambda _url: True
-    lines = []
-    for token in parser.parse(text):
-        if token.type == "inline":
-            lines.append(_inline_text(token.children))
-    visible = _URL.sub(" ", " ".join(lines))
+    visible = _project(text, parser.parse(text), title=title)
+    if _HIDDEN_TAG.search(visible):
+        return ""
+    # Clean projected text only. A code token can stand for a backtick-quoted MEDIA value,
+    # but its actual content never enters the projection or a second Markdown parse.
+    visible = _MEDIA_CODE_VALUE.sub(" ", visible).replace(_CODE, " ")
+    visible = _MEDIA_FALLBACK.sub(" ", MEDIA_TAG_CLEANUP_RE.sub(" ", visible))
+    visible = _URL.sub(" ", visible.replace(_OPAQUE, " "))
     if "![" in visible:
         # Unresolved image syntax can retain private alt text.
         return ""
@@ -82,5 +134,5 @@ def make_preview(title, answer):
     body = _plain(answer, 240)
     if not body:
         return None
-    title = _plain(title, 80) if title and len(title) <= PREVIEW_TITLE_SOURCE_LIMIT else ""
+    title = _plain(title, 80, title=True) if title and len(title) <= PREVIEW_TITLE_SOURCE_LIMIT else ""
     return {"title": title, "body": body} if title else {"body": body}
