@@ -25,16 +25,20 @@ def owns_policy(authority, ref, subject):
             and bool(subject) and same_owner(source.user_id, subject))
 
 
-def read_policy(conn, session_id):
+def read_policy(conn, session_id, *, include_revision=False):
     owner = local_lineage_owner(conn, session_id)
     row = conn.execute(
-        """SELECT response_ready, (SELECT value FROM state_meta WHERE key=?) AS profile_default
+        """SELECT response_ready, runtime_revision, (SELECT value FROM state_meta WHERE key=?) AS profile_default
            FROM sessions WHERE id=?""", (_PROFILE_DEFAULT_KEY, owner)).fetchone()
     if row is None:
         raise RuntimeStoreError('not_found')
     mode = row['response_ready']
     default = "on" if _decode_default(row['profile_default'])["enabled"] is True else "off"
-    return owner, {"mode": mode, "default": default, "effective": default if mode == "inherit" else mode}
+    policy = {"mode": mode, "default": default, "effective": default if mode == "inherit" else mode}
+    if include_revision:
+        # The revision fences writes based on this exact policy view.
+        policy["revision"] = row["runtime_revision"]
+    return owner, policy
 
 
 def _decode_default(value):
@@ -66,9 +70,7 @@ def change_profile_default(conn, enabled, expected_revision):
 
 def snapshot(authority, ref):
     with authority.db._read_ctx() as conn:
-        owner, policy = read_policy(conn, ref.session_id)
-        revision = conn.execute("SELECT runtime_revision FROM sessions WHERE id=?", (owner,)).fetchone()[0]
-        return {**policy, "revision": revision}
+        return read_policy(conn, ref.session_id, include_revision=True)[1]
 
 
 def turn_alert_allowed(conn, session_id):

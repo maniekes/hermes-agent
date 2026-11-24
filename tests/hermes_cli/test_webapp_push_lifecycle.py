@@ -189,7 +189,7 @@ def test_actual_webpush_codec_and_http_response_sequence(fixture, endpoint, cred
     assert _act(browser, "test").status_code == 429
 
 
-def _socket_request(browser, device, method, params, profile="beta"):
+def _socket_request(browser, device, method, params, profile="beta", *, expect_error=None):
     minted = browser.post("/api/webapp/socket-ticket", headers=_headers(device),
                           params={"socket": "gateway", "profile": profile})
     assert minted.status_code == 200, minted.text
@@ -213,6 +213,9 @@ def _socket_request(browser, device, method, params, profile="beta"):
         for _ in range(10):
             response = ws.receive_json()
             if response.get("id") == "review":
+                if expect_error is not None:
+                    assert response.get("error", {}).get("message") == expect_error, response
+                    return response["error"]
                 assert "result" in response, response
                 return response["result"]
         pytest.fail("RPC reply missing")
@@ -819,3 +822,50 @@ def test_profile_default_resolves_compressed_outbox_segments_through_their_roots
     with beta.db._read_ctx() as conn:
         assert conn.execute("SELECT due_at FROM web_push_outbox WHERE id=?",
                             (inherited,)).fetchone()[0] is None
+
+
+def test_session_info_pairs_response_ready_policy_with_its_revision(fixture, gated, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+
+    from gateway.web_push import conversation
+
+    reader = fixture.browser
+    writer = gated.browser()
+    _sign_in_with_password(writer)
+    sid = _socket_request(reader, PHONE, "session.create", {
+        "request_id": "policy-snapshot", "model": "gpt-4o-mini", "source": "gui",
+    })["session_id"]
+    initial = _response_ready_policy(reader, sid)
+    assert (initial["mode"], initial["default"], initial["effective"]) == ("inherit", "off", "off")
+
+    sampled, release = Event(), Event()
+    read_policy = conversation.read_policy
+
+    def pause_after_policy_read(conn, session_id, **options):
+        value = read_policy(conn, session_id, **options)
+        if session_id == sid and not sampled.is_set():
+            sampled.set()
+            assert release.wait(8)
+        return value
+
+    monkeypatch.setattr(conversation, "read_policy", pause_after_policy_read)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        pending = pool.submit(_response_ready_policy, reader, sid)
+        try:
+            assert sampled.wait(5)
+            assert _act(writer, "profile-default", "beta", {"enabled": True, "expected_revision": 0}).status_code == 200
+            _response_ready_policy(writer, sid, "on")
+            current = _response_ready_policy(writer, sid)
+            assert (current["mode"], current["default"], current["effective"]) == ("on", "on", "on")
+            assert current["revision"] > initial["revision"]
+        finally:
+            release.set()
+        observed = pending.result(timeout=5)
+
+    assert observed == initial
+    _socket_request(reader, PHONE, "session.mutate", {
+        "session_id": sid, "request_id": "write-from-stale-snapshot",
+        "expected_revision": observed["revision"], "operation": "response_ready", "payload": {"mode": "off"},
+    }, expect_error="revision_conflict")
+    assert _response_ready_policy(reader, sid) == current
