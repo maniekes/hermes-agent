@@ -1,7 +1,7 @@
 export const PUSH_INSTALLATION_HEADER = 'X-Hermes-Push-Installation'
 
 /** Browser storage is shared by this installation's windows and is independent of a socket or tab. */
-export function pushInstallation(basePath: string): string | undefined {
+export function pushInstallation(basePath: string, create = true): string | undefined {
   if (!window.isSecureContext || !navigator.serviceWorker || !('PushManager' in window)) {
     return undefined
   }
@@ -13,6 +13,8 @@ export function pushInstallation(basePath: string): string | undefined {
     if (current && /^[a-f0-9]{64}$/.test(current)) {
       return current
     }
+
+    if (!create) { return undefined }
 
     const value = Array.from(crypto.getRandomValues(new Uint8Array(32)), byte =>
       byte.toString(16).padStart(2, '0')

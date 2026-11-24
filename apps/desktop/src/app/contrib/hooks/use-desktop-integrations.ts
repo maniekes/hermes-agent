@@ -1,3 +1,4 @@
+import { LOCAL_CONNECTION_ID } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import { useEffect, useRef } from 'react'
 
@@ -9,6 +10,7 @@ import { commandFocusedTerminal, wordEraseFocusedTerminal } from '@/app/right-si
 import { openConnectionDoneLink } from '@/components/assistant-ui/connector-tool'
 import { $diskPluginsScanPending } from '@/contrib/runtime-loader'
 import { getSession } from '@/hermes'
+import { onBrowserPushClick } from '@/lib/browser-web-push'
 import { resolveDeepLinkAction } from '@/lib/deeplink-routes'
 import { pathFromHermesDeepLink, resolveHermesOpenPath } from '@/lib/hermes-open-target'
 import { storedSessionIdForNotification } from '@/lib/session-ids'
@@ -39,7 +41,7 @@ import {
   setRememberedSessionId,
   setSessionOwnerHint
 } from '@/store/session'
-import { $botChatScopes, $sessionTiles, storedSessionIdForRuntimeId } from '@/store/session-states'
+import { $botChatScopes, $sessionTiles, knownOwnerForSession, storedSessionIdForRuntimeId } from '@/store/session-states'
 import { onSessionsChanged } from '@/store/session-sync'
 import { requestSkillInstallFromDeepLink } from '@/store/skill-deeplink-install'
 import { openUpdatesWindow, startUpdatePoller, stopUpdatePoller } from '@/store/updates'
@@ -367,6 +369,34 @@ export function useDesktopIntegrations({
 
     return () => unsubscribe?.()
   }, [locationPathname, navigate, runtimeIdByStoredSessionId])
+
+  useEffect(() => {
+    if (!profileReady) { return }
+
+    const route = { connectionId: LOCAL_CONNECTION_ID, mode: 'local' as const, profile: activeProfile }
+
+    const sameOwner = (sessionId: string) => {
+      const owner = knownOwnerForSession(sessionId)
+
+      return !owner || (typeof owner === 'string' ? owner === activeProfile :
+        owner.connectionId === LOCAL_CONNECTION_ID && owner.profile === activeProfile)
+    }
+
+    return onBrowserPushClick(activeProfile, sameOwner, sessionId => {
+      const scope = $sessionTiles.get().find(tile => tile.storedSessionId === sessionId) ?? $botChatScopes.get()[sessionId]
+
+      if (isOverlayView(appViewForPath(locationPathname))) {
+        navigate(sessionRoute($selectedStoredSessionId.get() ?? ''), { replace: true })
+      }
+
+      // A fresh composer or a blank tile may hold unsent text. Keep its pane.
+      openSession(sessionId, navigate, 'tab', {
+        ...scope,
+        ownerRoute: route,
+        workspaceMode: scope?.workspaceMode ?? 'sessions'
+      })
+    })
+  }, [activeProfile, locationPathname, navigate, profileReady])
 
   useEffect(() => {
     const unsubscribe = window.hermesDesktop?.onNotificationAction?.(({ actionId, sessionId }) => {

@@ -869,3 +869,69 @@ def test_session_info_pairs_response_ready_policy_with_its_revision(fixture, gat
         "expected_revision": observed["revision"], "operation": "response_ready", "payload": {"mode": "off"},
     }, expect_error="revision_conflict")
     assert _response_ready_policy(reader, sid) == current
+
+
+def test_warm_click_authorizes_only_the_delivered_session_and_current_enrollment(fixture, endpoint, monkeypatch):
+    assert _enroll(fixture.browser, endpoint, profile="beta").status_code == 200
+    sid, admission = _preview_turn(fixture, monkeypatch, "Synthetic completed turn")
+    target = {"id": admission, "session": sid}
+    assert _act(fixture.browser, "open", "beta", target).json() == {"allowed": False}
+    assert fixture.runner.web_push.deliver_one(fixture.beta, "beta", generation())
+    assert _act(fixture.browser, "open", "beta", target).json() == {"allowed": True}
+    assert _act(fixture.browser, "open", "beta", {**target, "session": "wrong"}).json() == {"allowed": False}
+    assert _act(fixture.browser, "open", "default", target).json() == {"allowed": False}
+    assert fixture.browser.post(PATH + "/open", headers=_headers(DESKTOP), json=target,
+                                params={"profile": "beta"}).json() == {"allowed": False}
+    assert _act(fixture.browser, "disable", "beta").json() == {"applied": True}
+    assert _act(fixture.browser, "open", "beta", target).json() == {"allowed": False}
+
+
+
+def test_warm_click_sign_in_failure_leaves_the_cold_post_login_target(fixture, gated, endpoint, monkeypatch, tmp_path):
+    from urllib.parse import parse_qs, urlsplit
+
+    from tests.hermes_cli.test_webapp_gated_sign_out import PASSWORD, USER
+
+    assert _enroll(fixture.browser, endpoint, profile="beta").status_code == 200
+    sid, admission = _preview_turn(fixture, monkeypatch, "Synthetic completed turn")
+    assert fixture.runner.web_push.deliver_one(fixture.beta, "beta", generation())
+    target = {"id": admission, "session": sid}
+    cold_link = "/?profile=beta&pushSession=" + sid
+    (tmp_path / "index.html").write_text("<html><head></head><body>Synthetic app</body></html>")
+    monkeypatch.setattr(gated.server.app.state, "web_dist", tmp_path, raising=False)
+    signed_out = gated.browser()
+    assert _act(signed_out, "open", "beta", target).status_code == 401
+    redirected = signed_out.get(cold_link, follow_redirects=False)
+    assert redirected.status_code == 302
+    login = urlsplit(redirected.headers["location"])
+    assert login.path == "/login" and parse_qs(login.query) == {"next": [cold_link]}
+    login_response = signed_out.post("/auth/password-login", json={
+        "provider": "basic", "username": USER, "password": PASSWORD, "next": cold_link,
+    })
+    assert login_response.json() == {"ok": True, "next": cold_link}
+    assert signed_out.get(cold_link, follow_redirects=False).status_code == 200
+
+    foreign = gated.browser()
+    _sign_in_with_oauth(foreign)
+    assert _act(foreign, "open", "beta", target).json() == {"allowed": False}
+    csrf = fixture.browser.post(PATH + "/open", params={"profile": "beta"}, json=target,
+                                headers=_headers(PHONE, "https://different.invalid"))
+    assert csrf.status_code == 403
+
+
+def test_warm_click_checks_subscription_version_at_target_lookup(fixture, endpoint, monkeypatch):
+    assert _enroll(fixture.browser, endpoint, profile="beta").status_code == 200
+    sid, admission = _preview_turn(fixture, monkeypatch, "Synthetic completed turn")
+    assert fixture.runner.web_push.deliver_one(fixture.beta, "beta", generation())
+
+    read_target = store.click_target
+
+    def replace_enrollment(conn, row, event_id, session_id, now):
+        fixture.beta.db._execute_write(lambda writer: store.retire(writer, row["device"], row["version"]))
+        return read_target(conn, row, event_id, session_id, now)
+
+    # Change the profile's subscription after the first read, without a direct
+    # global grant change (unavailable material/re-enrollment can do this).
+    monkeypatch.setattr(store, "click_target", replace_enrollment)
+    target = {"id": admission, "session": sid}
+    assert _act(fixture.browser, "open", "beta", target).json() == {"allowed": False}

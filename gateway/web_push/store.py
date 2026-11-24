@@ -211,6 +211,15 @@ def seen(conn, event_id, device, owner, login):
         (event_id, device, time.time(), device, owner, login)).rowcount == 1
 
 
+def click_target(conn, row, event_id, session_id, now):
+    return conn.execute(
+        """SELECT 1 FROM web_push_outbox q JOIN sessions s ON s.id=q.session_id
+           JOIN web_push_subscriptions sub ON sub.device=q.device AND sub.version=q.version
+           WHERE q.id=? AND q.session_id=? AND q.device=? AND q.version=?
+           AND q.attempts>0 AND q.expires_at>?""",
+        (event_id, session_id, row["device"], row["version"], now)).fetchone() is not None
+
+
 def next_delivery(conn, now):
     return conn.execute(
         """SELECT q.*, s.sealed, s.login, s.vapid, s.owner, s.grant, s.profile_grant FROM web_push_outbox q

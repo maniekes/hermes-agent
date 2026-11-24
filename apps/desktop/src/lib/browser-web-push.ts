@@ -1,8 +1,14 @@
+import { LOCAL_CONNECTION_ID } from '@hermes/shared'
+
+import { findBrowserPushAdmission, ownsBrowserPushAdmission } from '@/lib/browser-notification-turns'
 import {
   browserNotificationPermission, pushNotificationRegistration, updateExistingNotificationWorker
 } from '@/lib/browser-notifications'
 import { PUSH_INSTALLATION_HEADER, pushInstallation } from '@/lib/browser-push-installation'
-import { browserApi, browserBootstrap } from '@/lib/browser-transport'
+import { browserApi, browserBootstrap, endpointUrl } from '@/lib/browser-transport'
+import { type BrowserHostGlobals, browserLaunchProfileOrDefault, isBrowserHostedDesktop } from '@/lib/platform'
+import { $connection } from '@/store/session'
+import { isBrowserWindow, isHudWindow, isWatchWindow } from '@/store/windows'
 
 export interface WebPushStatus {
   active: boolean
@@ -219,6 +225,138 @@ export async function setBrowserPushPreview(profile: null | string, preview: boo
 
 export function acknowledgeBrowserPush(admissionId: string, profile?: string) {
   void request(profile, 'seen', admissionId)?.catch(() => {})
+}
+
+const PUSH_CLICK_CONFIRM_MS = 1000
+
+interface BrowserPushClick {
+  deadline: number
+  profile: string
+  proof: string
+  session: string
+}
+
+const pushTargetPart = (value: unknown): value is string =>
+  typeof value === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(value)
+
+function isPushClick(value: Record<string, unknown>): value is Record<string, unknown> & BrowserPushClick {
+  return typeof value.proof === 'string' && /^[0-9a-f]{64}$/.test(value.proof) &&
+    pushTargetPart(value.profile) && pushTargetPart(value.session) && typeof value.deadline === 'number' &&
+    Number.isFinite(value.deadline) && value.deadline > Date.now() && value.deadline <= Date.now() + PUSH_CLICK_CONFIRM_MS
+}
+
+/** Offer/commit runs only for a click. The live view never follows an unverified payload. */
+export function onBrowserPushClick(
+  profile: string,
+  canOpen: (session: string) => boolean,
+  open: (session: string) => void
+): (() => void) | undefined {
+  const bootstrap = browserBootstrap()
+  const serviceWorker = navigator.serviceWorker
+
+  if (!serviceWorker || !bootstrap?.authRequired || !isBrowserHostedDesktop() ||
+      (window as Window & BrowserHostGlobals).__HERMES_UI_SURFACE__ !== 'webapp' ||
+      isBrowserWindow() || isHudWindow() || isWatchWindow()) { return }
+
+  const script = endpointUrl('/hermes-notifications-sw.js', bootstrap.basePath).href
+  const pending = new Set<() => void>()
+  let listening = true
+
+  const eligible = (data: BrowserPushClick) => {
+    const current = $connection.get()
+
+    return listening && data.profile === profile && current &&
+      (current.connectionId || LOCAL_CONNECTION_ID) === LOCAL_CONNECTION_ID &&
+      (current.profile || browserLaunchProfileOrDefault()) === profile &&
+      canOpen(data.session)
+  }
+
+  const prepare = async (data: BrowserPushClick, port: MessagePort) => {
+    const installation = eligible(data) ? pushInstallation(bootstrap.basePath, false) : undefined
+
+    if (!installation) {
+      port.postMessage({ ready: false })
+      port.close()
+
+      return
+    }
+
+    const controller = new AbortController()
+
+    const finish = () => {
+      window.clearTimeout(timer)
+      pending.delete(finish)
+      controller.abort()
+      port.close()
+    }
+
+    const timer = window.setTimeout(finish, Math.max(0, data.deadline + PUSH_CLICK_CONFIRM_MS - Date.now()))
+    pending.add(finish)
+
+    try {
+      // The offer carries a digest so a reply cannot just echo the receipt
+      // ID. Use this document's receipts and check the server's scope too.
+      const id = await findBrowserPushAdmission(data.proof)
+
+      if (!id || Date.now() >= data.deadline || !eligible(data)) {
+        port.postMessage({ ready: false })
+        finish()
+
+        return
+      }
+
+      // A 401 here declines the offer. The worker's cold document link carries the
+      // target through login, so this request must never redirect the current page.
+      const response = await fetch(endpointUrl(`${path}/open`, bootstrap.basePath, data.profile), {
+        body: JSON.stringify({ id, session: data.session }),
+        cache: 'no-store',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json', [PUSH_INSTALLATION_HEADER]: installation },
+        method: 'POST',
+        redirect: 'error',
+        signal: controller.signal
+      })
+
+      const allowed = response.ok && (await response.json()).allowed === true
+
+      if (allowed && Date.now() < data.deadline && eligible(data) && ownsBrowserPushAdmission(id)) {
+        port.onmessage = ({ data: choice }) => {
+          try {
+            if (choice?.open === true && Date.now() < data.deadline + PUSH_CLICK_CONFIRM_MS && eligible(data) && ownsBrowserPushAdmission(id)) { open(data.session) }
+          } finally {
+            finish()
+          }
+        }
+
+        port.postMessage({ ready: true, id })
+
+        return
+      }
+    } catch {
+      // No usable authorization for the warm path.
+    }
+
+    port.postMessage({ ready: false })
+    finish()
+  }
+
+  const onMessage = (event: MessageEvent) => {
+    const { data, source, ports: [port] } = event
+
+    if (port && typeof ServiceWorker !== 'undefined' && source instanceof ServiceWorker && source.scriptURL === script &&
+      data?.type === 'hermes:prepare-push-click' && isPushClick(data)) {
+      void prepare(data, port)
+    }
+  }
+
+  serviceWorker.addEventListener('message', onMessage)
+
+  return () => {
+    listening = false
+    serviceWorker.removeEventListener('message', onMessage)
+
+    for (const finish of pending) { finish() }
+  }
 }
 
 /** Consume only the same-origin deep link that survived the Webapp login redirect. */

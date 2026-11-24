@@ -28,6 +28,11 @@ def _response(**value):
     return JSONResponse(value, headers={"Cache-Control": "no-store"})
 
 
+def _require_webapp_origin(request):
+    if not request.headers.get("origin") or not cookie_origin_is_allowed(request):
+        raise HTTPException(403, "Web Push requests must come from this Webapp")
+
+
 def _device(request):
     values = request.headers.getlist(_DEVICE_HEADER)
     return installation_digest(values[0]) if len(values) == 1 else None
@@ -176,8 +181,7 @@ def _write_profile_default(authority, enabled, revision):
 
 @router.post("/profile-default")
 async def set_profile_default(request: Request, profile: str):
-    if not request.headers.get("origin") or not cookie_origin_is_allowed(request):
-        raise HTTPException(403, "Web Push requests must come from this Webapp")
+    _require_webapp_origin(request)
     authority = _profile_default_authority(request, profile)
     value = await _read_body(request)
     if (not isinstance(value, dict) or value.keys() != {"enabled", "expected_revision"}
@@ -195,10 +199,27 @@ async def set_profile_default(request: Request, profile: str):
     return _response(**saved)
 
 
+@router.post("/open")
+async def can_open_click_target(request: Request, profile: str):
+    _require_webapp_origin(request)
+    push, authority, device, owner, login = _context(request, profile)
+    value = await _read_body(request)
+    if not isinstance(value, dict) or value.keys() != {"id", "session"}:
+        raise HTTPException(400, "Expected a Web Push click target")
+    event_id, session_id = value["id"], value["session"]
+    if (not isinstance(event_id, str) or not re.fullmatch(r"[0-9a-f]{32}", event_id)
+            or not isinstance(session_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", session_id)
+            or not profile or request.query_params.getlist("profile") != [profile]):
+        raise HTTPException(400, "Invalid Web Push click target")
+    if push is None or authority is None:
+        return _response(allowed=False)
+    allowed = await run_in_threadpool(push.can_open, authority, device, owner, login, event_id, session_id)
+    return _response(allowed=allowed)
+
+
 @router.post("/{action}")
 async def push_action(request: Request, action: str, profile: str | None = None):
-    if not request.headers.get("origin") or not cookie_origin_is_allowed(request):
-        raise HTTPException(403, "Web Push requests must come from this Webapp")
+    _require_webapp_origin(request)
     push, authority, device, owner, login = _context(request, profile)
     value = await _read_body(request)
     state = request.app.state

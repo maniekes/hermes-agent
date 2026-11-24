@@ -1,7 +1,9 @@
+import { webcrypto } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { runInNewContext } from 'node:vm'
+import { MessageChannel } from 'node:worker_threads'
 
 import { describe, expect, it, vi } from 'vitest'
 
@@ -10,7 +12,7 @@ const script = readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), '..
 function worker(language = 'en-US') {
   const callbacks = new Map<string, (event: unknown) => void>()
   const registration = { scope: 'https://hermes.example/webapp/hermes-notifications/', showNotification: vi.fn() }
-  const clients = { get: vi.fn(), openWindow: vi.fn() }
+  const clients = { get: vi.fn(), matchAll: vi.fn().mockResolvedValue([]), openWindow: vi.fn() }
 
   const self = {
     addEventListener: (type: string, callback: (event: unknown) => void) => callbacks.set(type, callback),
@@ -19,7 +21,7 @@ function worker(language = 'en-US') {
     registration
   }
 
-  runInNewContext(script, { self, URL })
+  runInNewContext(script, { clearTimeout, crypto: webcrypto, MessageChannel, self, setTimeout, TextEncoder, URL })
 
   function send(type: string, event: object) {
     let pending: Promise<unknown> | undefined
@@ -126,7 +128,7 @@ describe('notification service worker', () => {
       tag: `hermes:push:${id}`
     })
     await send('notificationclick', {
-      notification: { close: vi.fn(), data: registration.showNotification.mock.calls[0][1].data }
+      notification: { close: vi.fn(), tag: registration.showNotification.mock.calls[0][1].tag, data: registration.showNotification.mock.calls[0][1].data }
     })
     expect(clients.get).not.toHaveBeenCalled()
     expect(clients.openWindow).toHaveBeenCalledWith('https://hermes.example/webapp/?profile=work&pushSession=old-chat')
@@ -166,4 +168,107 @@ it.each([
   const { registration, send } = worker('pl-PL')
   await send('push', { data: { json: () => ({ id: '3'.repeat(32), kind: 'turn', preview, profile: 'work', session: target }) } })
   expect(registration.showNotification).toHaveBeenCalledWith('Hermes', expect.objectContaining({ body: 'Odpowiedź gotowa' }))
+})
+
+it('focuses the unique live admitting document without opening a new document', async () => {
+  const { clients, registration, send } = worker()
+  const id = '4'.repeat(32)
+  const activated = vi.fn()
+
+  const owner = {
+    id: 'browser-owned',
+    type: 'window',
+    frameType: 'top-level',
+    url: 'https://hermes.example/webapp/?profile=work#/different-chat',
+    focus: vi.fn(),
+    postMessage: vi.fn((_, [port]) => {
+      port.onmessage = ({ data }: { data: unknown }) => {
+        activated(data)
+        port.close()
+      }
+
+      port.postMessage({ ready: true, id, clientId: 'irrelevant-claimed-id' })
+    })
+  }
+
+  owner.focus.mockResolvedValue(owner)
+  clients.matchAll.mockResolvedValue([owner])
+  await send('push', { data: { json: () => ({ id, kind: 'turn', profile: 'work', session: 'old-chat' }) } })
+  expect(clients.matchAll).not.toHaveBeenCalled()
+  expect(owner.focus).not.toHaveBeenCalled()
+  await send('notificationclick', {
+    notification: { close: vi.fn(), tag: registration.showNotification.mock.calls[0][1].tag, data: registration.showNotification.mock.calls[0][1].data }
+  })
+  expect(clients.openWindow).not.toHaveBeenCalled()
+  expect(owner.focus).toHaveBeenCalledOnce()
+  expect(owner.postMessage.mock.calls[0]?.[0]).toMatchObject({ proof: expect.stringMatching(/^[0-9a-f]{64}$/) })
+  expect(owner.postMessage.mock.calls[0]?.[0]).not.toHaveProperty('id')
+  await vi.waitFor(() => expect(activated).toHaveBeenCalledWith({ open: true }))
+})
+
+it.each(['ambiguous', 'closed', 'silent', 'declined', 'spoofed'])('keeps the cold link when the initiating document is %s', async scenario => {
+  const { clients, send } = worker()
+  const base = 'https://hermes.example/webapp/'
+
+  const make = (id: string, ready: boolean | undefined, url = base, frameType = 'top-level') => ({
+    id, url, frameType, focus: vi.fn(), postMessage: vi.fn((_, [port]) => {
+      if (ready !== undefined) { port.postMessage({ ready, id: (scenario === 'spoofed' ? '7' : '5').repeat(32) }) }
+      port.close()
+    })
+  })
+
+  const owner = make('original', scenario === 'silent' ? undefined : scenario === 'declined' ? false : true)
+
+  if (scenario === 'closed') { owner.focus.mockRejectedValue(new Error('window closed')) }
+  const duplicate = make('duplicate', scenario === 'ambiguous')
+  const unrelated = make('unrelated', true, base + 'login')
+  const nested = make('nested', true, base, 'nested')
+  clients.matchAll.mockResolvedValue([owner, duplicate, unrelated, nested])
+
+  await send('notificationclick', {
+    notification: { close: vi.fn(), tag: `hermes:push:${'5'.repeat(32)}`, data: {
+      push: true, pushProfile: 'work', pushSession: 'old-chat'
+    } }
+  })
+
+  expect(unrelated.postMessage).not.toHaveBeenCalled()
+  expect(nested.postMessage).not.toHaveBeenCalled()
+  expect(duplicate.focus).not.toHaveBeenCalled()
+  expect(owner.focus).toHaveBeenCalledTimes(scenario === 'closed' ? 1 : 0)
+  expect(clients.openWindow).toHaveBeenCalledExactlyOnceWith(base + '?profile=work&pushSession=old-chat')
+})
+
+
+it('drops an older clustered click still awaiting a live document', async () => {
+  const { clients, send } = worker()
+  const focused = vi.fn()
+  let finishFirst!: () => void
+
+  const first = {
+    id: 'old-window', frameType: 'top-level', url: 'https://hermes.example/webapp/',
+    focus: focused,
+    postMessage: vi.fn((_, [port]) => {
+      finishFirst = () => {
+        port.postMessage({ ready: false })
+        port.close()
+      }
+    })
+  }
+
+  clients.matchAll.mockResolvedValueOnce([first]).mockResolvedValueOnce([])
+
+  const click = (session: string) => send('notificationclick', {
+    notification: { close: vi.fn(), tag: `hermes:push:${'6'.repeat(32)}`, data: {
+      push: true, pushProfile: 'work', pushSession: session
+    } }
+  })
+
+  const older = click('older')
+  await vi.waitFor(() => expect(first.postMessage).toHaveBeenCalledOnce())
+  await click('latest')
+  finishFirst()
+  await older
+
+  expect(focused).not.toHaveBeenCalled()
+  expect(clients.openWindow).toHaveBeenCalledExactlyOnceWith('https://hermes.example/webapp/?profile=work&pushSession=latest')
 })

@@ -234,6 +234,18 @@ class WebPush:
             return row
         return None
 
+    def can_open(self, authority, device, owner, login, event_id, session_id):
+        grants = self._grants(authority, device)
+        (current, grant, recorded_login), profile_grant = grants
+        if (current, recorded_login) != (owner, login):
+            return False
+        with authority.db._read_ctx() as conn:
+            row = store.subscription(conn, device, owner, login, self.vapid_id, grant)
+            allowed = (row is not None and row["profile_grant"] == profile_grant
+                       and store.click_target(conn, row, event_id, session_id, time.time()))
+        # Device/profile revocation can land in the control database during the profile read.
+        return allowed and self._grants(authority, device) == grants and browser_credential.is_current(login)
+
     def matches(self, authority, device, owner, login, value):
         encoded = self._encoded(normalize_subscription(value))
         material = hmac.digest(self.storage_secret, encoded, "sha256").hex()

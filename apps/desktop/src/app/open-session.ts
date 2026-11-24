@@ -198,8 +198,8 @@ export function openSession(
       return
     }
 
-    if (botWorkspaceScope) {
-      openSessionTile(storedSessionId, 'center', undefined, undefined, botWorkspaceScope)
+    if (workspaceScope.ownerRoute || botWorkspaceScope) {
+      openSessionTile(storedSessionId, 'center', undefined, undefined, workspaceScope)
     } else {
       openSessionTile(storedSessionId, 'center')
     }
