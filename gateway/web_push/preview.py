@@ -31,7 +31,7 @@ _UNSAFE_CHARS = re.compile(r"[\x00-\x08\x0e-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2
 
 
 def _opens_hidden(tag):
-    return not (tag[0].startswith("</") or tag[0].endswith("/>"))
+    return not tag[0].startswith("</")
 
 
 def _source_tags(text):
@@ -40,6 +40,16 @@ def _source_tags(text):
 
 def _hidden_openings(tags):
     return [tag[1].casefold() for tag in tags if _opens_hidden(tag)]
+
+
+def _comment_slash_openings(token):
+    if token.type == "image":
+        return []
+    comment, end, _ = token.content.partition("-->")
+    if not end or not comment.lstrip().startswith("<!--") or "--!>" in comment:
+        return []
+    # HTML can end an abruptly closed comment at --!> before MarkdownIt does.
+    return _hidden_openings(tag for tag in _source_tags(comment) if tag[0].endswith("/>"))
 
 
 def _content_tokens(blocks):
@@ -75,7 +85,8 @@ def _project(text, blocks, *, title):
                 parts.append(_OPAQUE)
             link = None
         elif token.type == "html_inline" and link is None and (tag := _HIDDEN_TAG.fullmatch(token.content)):
-            if quoted:
+            # A trailing slash does not make a hidden HTML element empty.
+            if quoted or tag[0].endswith("/>"):
                 return ""
             name = tag[1].casefold()
             if _opens_hidden(tag):
@@ -92,16 +103,18 @@ def _project(text, blocks, *, title):
                 quoted = quoted or bool(_AMBIGUOUS_HIDDEN.search(token.content))
             else:
                 parts.append(token.content.replace(_OPAQUE, ""))
-        elif not hidden and token.type in {"image", "html_inline", "html_block"}:
-            parts.append(_OPAQUE)
+        elif token.type in {"image", "html_inline", "html_block"}:
+            openings.extend(_comment_slash_openings(token))
+            if not hidden:
+                parts.append(_OPAQUE)
 
-    # A source opener must be recognized or proven to belong to an excluded code token.
+    # A source opener must be recognized or accounted for in excluded code or comments.
     # In particular, a parser-opaque HTML block or encoded/attribute tag cannot silently
     # drop an opener. Only a complete HTML token can close an active region.
     source_tags = list(_source_tags(text))
-    if openings != _hidden_openings(source_tags):
-        return ""
-    if hidden and any(tag[0].startswith("</") and tag[1].casefold() in hidden for tag in source_tags):
+    if openings != _hidden_openings(source_tags) or (
+        hidden and any(tag[0].startswith("</") and tag[1].casefold() in hidden for tag in source_tags)
+    ):
         return ""  # A suppressed potential closer cannot establish the end.
     return "".join(parts)
 

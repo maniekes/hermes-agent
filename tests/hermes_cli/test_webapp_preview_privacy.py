@@ -279,3 +279,44 @@ def test_sender_preserves_media_spans_across_opaque_markdown(fixture, endpoint, 
     answer = "Jawne.\n\n" + ("A | B\n--- | ---\n" if table else "") + directive + "\n\nDalej."
     preview, _ = _delivered_preview(fixture, endpoint, monkeypatch, answer)
     assert preview == {"body": "Jawne. A B Dalej." if table else "Jawne. Dalej."}
+
+
+@pytest.mark.parametrize("answer", [
+    "Jawne. <analysis/> SYNTH_AMBIGUOUS_HIDDEN </analysis> Koniec.",
+    "Jawne. <ReAsOnInG  /> SYNTH_AMBIGUOUS_HIDDEN </REASONING> Koniec.",
+    'Jawne. <details class="synthetic" /> SYNTH_AMBIGUOUS_HIDDEN </details> Koniec.',
+    'Jawne. <style data-check=">" /> SYNTH_AMBIGUOUS_HIDDEN </style> Koniec.',
+    "Jawne. <analysis> <template/> SYNTH_AMBIGUOUS_HIDDEN </template> </analysis> Koniec.",
+    "<analysis/>\nSYNTH_AMBIGUOUS_HIDDEN\n\nDalej bez pewnej granicy.",
+])
+def test_sender_falls_back_for_ambiguous_hidden_slash_boundaries(fixture, endpoint, monkeypatch, answer):
+    preview, _ = _delivered_preview(fixture, endpoint, monkeypatch, answer)
+    assert preview == {}, preview
+
+
+def test_sender_omits_ambiguous_stored_title_but_keeps_body(fixture, endpoint, monkeypatch):
+    title = 'Jawne.\n<AnAlYsIs data-x="fixture" />\tSYNTH_HIDDEN\n</ANALYSIS> Dalej.'
+    body = "Raport Synthetic Archive ON/OFF działa. /synthetic/a.txt %2Fsynthetic"
+    preview, sid = _delivered_preview(fixture, endpoint, monkeypatch, body, title)
+    assert fixture.beta.db.get_session_title(sid) == (
+        'Jawne. <AnAlYsIs data-x="fixture" /> SYNTH_HIDDEN </ANALYSIS> Dalej.'
+    )
+    assert preview == {"body": body}
+
+
+@pytest.mark.parametrize("literal_markup", [
+    "`<analysis/> </analysis>`",
+    "<!-- <analysis/> </analysis> -->",
+    "\n\n<!-- <analysis/> </analysis> -->\n\n",
+    "<analysis> <!-- <details/> </analysis> --> SYNTH_HIDDEN </analysis>",
+])
+def test_sender_keeps_prose_when_slash_tags_are_excluded(fixture, endpoint, monkeypatch, literal_markup):
+    answer = "Jawne. " + literal_markup + " Dalej ON/OFF działa. /synthetic/a.txt %2Fsynthetic"
+    preview, _ = _delivered_preview(fixture, endpoint, monkeypatch, answer)
+    assert preview == {"body": "Jawne. Dalej ON/OFF działa. /synthetic/a.txt %2Fsynthetic"}
+
+
+def test_sender_does_not_trust_ambiguous_comment_terminator(fixture, endpoint, monkeypatch):
+    answer = "Jawne.\n\n<!-- fixture --!> <analysis/>\n-->\n\nSYNTH_HIDDEN </analysis>"
+    preview, _ = _delivered_preview(fixture, endpoint, monkeypatch, answer)
+    assert preview == {}, preview
