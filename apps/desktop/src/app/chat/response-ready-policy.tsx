@@ -28,7 +28,16 @@ function policyFrom(response: unknown): Policy | undefined {
 
 type RequestPolicy = (method: string, params: Record<string, unknown>) => Promise<unknown>
 
-export function ResponseReadyPolicyPicker({ request, sessionId }: { request: RequestPolicy; sessionId: string }) {
+interface PickerProps {
+  request: RequestPolicy
+  sessionId: string
+}
+
+export function ResponseReadyPolicyPicker(props: PickerProps) {
+  return <SessionPolicyPicker key={props.sessionId} {...props} />
+}
+
+function SessionPolicyPicker({ request, sessionId }: PickerProps) {
   const { t } = useI18n()
   const copy = t.settings.notifications.webPushPolicy
   const [policy, setPolicy] = useState<Policy>()
@@ -65,6 +74,8 @@ export function ResponseReadyPolicyPicker({ request, sessionId }: { request: Req
     const id = ++requestVersion.id
     setBusy(true)
 
+    let saved = false
+
     try {
       await request('session.mutate', {
         expected_revision: policy.revision,
@@ -73,17 +84,23 @@ export function ResponseReadyPolicyPicker({ request, sessionId }: { request: Req
         request_id: randomUuid(),
         session_id: sessionId
       })
-      const confirmed = await read()
-
-      if (!confirmed || confirmed.mode !== mode) { throw new Error(copy.failed) }
-
-      if (id === requestVersion.id) { setPolicy(confirmed) }
+      saved = true
     } catch {
-      if (id === requestVersion.id) { notify({ kind: 'error', message: copy.failed }) }
-    } finally {
-      mutating.current = false
-      setBusy(false)
+      // A rejected write can mean another writer changed the server revision.
     }
+
+    if (id === requestVersion.id) {
+      const confirmed = await read().catch(() => undefined)
+
+      if (id === requestVersion.id) {
+        setPolicy(confirmed)
+
+        if (!saved || confirmed?.mode !== mode) { notify({ kind: 'error', message: copy.failed }) }
+      }
+    }
+
+    mutating.current = false
+    setBusy(false)
   }
 
   if (!policy) { return null }
@@ -117,5 +134,5 @@ export function ConversationResponseReadyPolicy({ sessionId }: { sessionId: stri
     return null
   }
 
-  return <ResponseReadyPolicyPicker key={sessionId} request={request} sessionId={sessionId} />
+  return <ResponseReadyPolicyPicker request={request} sessionId={sessionId} />
 }
