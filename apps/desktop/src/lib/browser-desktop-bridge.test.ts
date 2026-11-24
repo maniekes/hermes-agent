@@ -15,6 +15,7 @@ type MutableWindow = Window & {
   __HERMES_AUTH_REQUIRED__?: boolean
   __HERMES_BASE_PATH__?: string
   __HERMES_DASHBOARD_PROFILE__?: string
+  __HERMES_UI_SURFACE__?: string
   hermesDesktop?: Window['hermesDesktop']
 }
 
@@ -25,6 +26,7 @@ afterEach(() => {
   delete win.__HERMES_AUTH_REQUIRED__
   delete win.__HERMES_BASE_PATH__
   delete win.__HERMES_DASHBOARD_PROFILE__
+  delete win.__HERMES_UI_SURFACE__
   clearWebappSession()
   Reflect.deleteProperty(win, 'hermesDesktop')
   document.documentElement.removeAttribute('data-hermes-desktop-host')
@@ -36,6 +38,39 @@ afterEach(() => {
 })
 
 describe('browser-hosted Desktop bridge', () => {
+  it('refreshes the enrolled worker on Webapp boot and only when returning to a visible page', async () => {
+    const win = mutableWindow()
+    win.__HERMES_AUTH_REQUIRED__ = true
+    win.__HERMES_UI_SURFACE__ = 'webapp'
+    win.__HERMES_BASE_PATH__ = '/hermes'
+    vi.stubGlobal('isSecureContext', true)
+    vi.stubGlobal('Notification', { permission: 'granted' })
+
+    let visibility = 'visible'
+    vi.spyOn(document, 'visibilityState', 'get').mockImplementation(() => visibility as DocumentVisibilityState)
+
+    const registration = {
+      active: { scriptURL: new URL('/hermes/hermes-notifications-sw.js', window.location.origin).href, state: 'activated' },
+      pushManager: { getSubscription: vi.fn().mockResolvedValue({}) },
+      scope: new URL('/hermes/hermes-notifications/', window.location.origin).href,
+      update: vi.fn().mockResolvedValue(undefined)
+    }
+
+    const serviceWorker = { getRegistration: vi.fn().mockResolvedValue(registration), register: vi.fn() }
+    vi.stubGlobal('navigator', { serviceWorker })
+
+    expect(installBrowserDesktopBridge()).toBe(true)
+    await vi.waitFor(() => expect(registration.update).toHaveBeenCalledOnce())
+    visibility = 'hidden'
+    document.dispatchEvent(new Event('visibilitychange'))
+    expect(serviceWorker.getRegistration).toHaveBeenCalledOnce()
+
+    visibility = 'visible'
+    document.dispatchEvent(new Event('visibilitychange'))
+    await vi.waitFor(() => expect(registration.update).toHaveBeenCalledTimes(2))
+    expect(serviceWorker.register).not.toHaveBeenCalled()
+  })
+
   it('does not make network requests to resolve link titles', async () => {
     seedWebappSession('served-token')
     const fetchMock = vi.fn().mockResolvedValue(new Response('<title>Untrusted title</title>'))

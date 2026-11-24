@@ -1,4 +1,6 @@
-import { browserNotificationPermission, pushNotificationRegistration } from '@/lib/browser-notifications'
+import {
+  browserNotificationPermission, pushNotificationRegistration, updateExistingNotificationWorker
+} from '@/lib/browser-notifications'
 import { PUSH_INSTALLATION_HEADER, pushInstallation } from '@/lib/browser-push-installation'
 import { browserApi, browserBootstrap } from '@/lib/browser-transport'
 
@@ -63,6 +65,8 @@ export async function browserPushStatus(profile?: null | string): Promise<WebPus
   const check = await request<{ active: boolean }>(profile, 'check', subscription.toJSON())
   const active = check?.active === true
 
+  if (active) { void refreshExistingBrowserPushWorker() }
+
   return { ...status, active, needsRepair: !active }
 }
 
@@ -72,17 +76,39 @@ function applicationKey(value: string): Uint8Array<ArrayBuffer> {
   return Uint8Array.from(atob(base.padEnd(Math.ceil(base.length / 4) * 4, '=')), char => char.charCodeAt(0))
 }
 
+async function existingBrowserRegistration(basePath: string) {
+  const scope = new URL(`${basePath}/hermes-notifications/`, window.location.origin).href
+  const registration = await navigator.serviceWorker?.getRegistration(scope)
+
+  return registration?.scope === scope ? registration : undefined
+}
+
 async function existingBrowserSubscription() {
   const bootstrap = browserBootstrap()
+  const registration = bootstrap && await existingBrowserRegistration(bootstrap.basePath)
 
-  if (!bootstrap || !navigator.serviceWorker) {
-    return undefined
-  }
+  return registration ? registration.pushManager.getSubscription() : undefined
+}
 
-  const scope = new URL(`${bootstrap.basePath}/hermes-notifications/`, window.location.origin).href
-  const registration = await navigator.serviceWorker.getRegistration(scope)
+let existingWorkerUpdate: Promise<void> | undefined
 
-  return registration?.scope === scope ? registration.pushManager.getSubscription() : undefined
+export async function refreshExistingBrowserPushWorker(): Promise<void> {
+  const bootstrap = browserBootstrap()
+
+  if (!bootstrap?.authRequired || browserNotificationPermission() !== 'granted') { return }
+
+  // This sub-scope does not control app navigation, so boot can leave an older worker active.
+  existingWorkerUpdate ??= (async () => {
+    const registration = await existingBrowserRegistration(bootstrap.basePath)
+
+    if (registration && await registration.pushManager.getSubscription()) {
+      await updateExistingNotificationWorker(registration, bootstrap.basePath)
+    }
+  })().catch(() => {
+    // An update can fail offline. Enrollment and privacy readback remain independent.
+  }).finally(() => { existingWorkerUpdate = undefined })
+
+  await existingWorkerUpdate
 }
 
 function sameKey(subscription: PushSubscription, key: Uint8Array) {

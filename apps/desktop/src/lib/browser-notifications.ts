@@ -141,6 +141,15 @@ export async function pushNotificationRegistration(basePath: string) {
   return registration
 }
 
+export async function updateExistingNotificationWorker(registration: ServiceWorkerRegistration, basePath: string) {
+  const script = new URL(WORKER_FILE, new URL(`${basePath}/`, window.location.origin)).href
+
+  if (registration.active?.scriptURL !== script) { return }
+
+  await registration.update()
+  await activeNotificationWorker(registration, true)
+}
+
 async function showWorkerNotification(
   serviceWorker: ServiceWorkerContainer,
   title: string,

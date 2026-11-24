@@ -16,7 +16,7 @@ import { createBrowserTerminal } from '@/lib/browser-terminal'
 import { browserApi, type BrowserBootstrap, browserBootstrap, ticketedWebsocketUrl } from '@/lib/browser-transport'
 import { createBrowserUiPreferences } from '@/lib/browser-ui-preferences'
 import { createBrowserUploadsBridge } from '@/lib/browser-uploads'
-import { consumeBrowserPushLink } from '@/lib/browser-web-push'
+import { consumeBrowserPushLink, refreshExistingBrowserPushWorker } from '@/lib/browser-web-push'
 import { announceWebappWindow, createBrowserWindowOpener, sessionWindowTarget } from '@/lib/browser-window'
 import { createBrowserZoom } from '@/lib/browser-zoom'
 import { failDesktopBoot } from '@/store/boot'
@@ -36,9 +36,12 @@ import { tagRegistrySessionResponse } from '../../electron/profile-session-routi
  * contract onto the same-origin /api + /api/ws surface and deliberately exposes
  * only safe browser equivalents for machine-level capabilities.
  */
-/** The Webapp serves this machine's saved connections; the standalone dashboard does not. */
-function savedConnectionsServed(): boolean {
+function isServingWebapp(): boolean {
   return (window as Window & { __HERMES_UI_SURFACE__?: string }).__HERMES_UI_SURFACE__ === 'webapp'
+}
+
+function refreshVisiblePushWorker() {
+  if (document.visibilityState === 'visible') { void refreshExistingBrowserPushWorker() }
 }
 
 export function installBrowserDesktopBridge(): boolean {
@@ -50,6 +53,11 @@ export function installBrowserDesktopBridge(): boolean {
 
   if (!bootstrap) {
     return false
+  }
+
+  if (bootstrap.authRequired && isServingWebapp()) {
+    refreshVisiblePushWorker()
+    document.addEventListener('visibilitychange', refreshVisiblePushWorker)
   }
 
   const pushLink = consumeBrowserPushLink(new URL(window.location.href))
@@ -68,7 +76,7 @@ export function installBrowserDesktopBridge(): boolean {
   // This machine's saved gateway connections (the list native Desktop keeps): each other gateway's
   // requests ride `/api/relay/<id>` on this origin (browser-saved-connections.ts). A host that does
   // not serve the list (the standalone dashboard) reaches only its own origin.
-  const relays: BrowserSavedConnections | null = savedConnectionsServed() ? createBrowserSavedConnections({ api, bootstrap }) : null
+  const relays: BrowserSavedConnections | null = isServingWebapp() ? createBrowserSavedConnections({ api, bootstrap }) : null
   const bootstrapFor = (connectionId?: null | string) => relays?.bootstrapFor(connectionId) ?? bootstrap
   const activeConnectionId = () => $connection.get()?.connectionId ?? LOCAL_CONNECTION_ID
 
