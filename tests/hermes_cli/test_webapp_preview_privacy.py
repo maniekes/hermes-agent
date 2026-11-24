@@ -51,10 +51,11 @@ def test_generic_ack_before_transport_cannot_leave_preview_in_unsent_payload(fix
 
 @pytest.mark.parametrize("answer,hidden", [
     ("<analysis>private sample `</analysis>` INTERNAL_THOUGHT</analysis> **Wynik**", "INTERNAL_THOUGHT"),
-    ("Wynik /tmp/synthetic meeting recording.png", "meeting recording.png"),
+    ("Wynik\nMEDIA: /tmp/synthetic meeting recording.png", "meeting recording.png"),
+    ("Wynik ![private label][unresolved]", "private label"),
     ("Wynik ![PRIVATE_CAPTION][attachment]" + "\n\n" + "x" * 16400 +
      "\n\n[attachment]: /tmp/image.png", "PRIVATE_CAPTION"),
-], ids=["quoted-hidden-close", "bare-spaced-media-path", "reference-image-crosses-input-bound"])
+], ids=["quoted-hidden-close", "technical-media-directive", "unresolved-image", "reference-image-crosses-input-bound"])
 def test_preview_omits_invisible_and_media_content(fixture, endpoint, monkeypatch, answer, hidden):
     _consent(fixture, endpoint)
     _preview_turn(fixture, monkeypatch, answer)
@@ -97,51 +98,43 @@ def test_generic_confirmation_waits_only_for_the_reserved_preview(fixture, endpo
     assert len(fixture.sends) == 1
 
 
-def test_sender_keeps_neutral_on_off_in_title_and_body(fixture, endpoint, monkeypatch):
+def test_sender_keeps_visible_paths_and_on_off_prose(fixture, endpoint, monkeypatch):
     _consent(fixture, endpoint)
     _preview_turn(fixture, monkeypatch, "Poprawka dziedziczenia ON/OFF jest gotowa.", title="Tryb ON/OFF")
     assert fixture.runner.web_push.deliver_one(fixture.beta, "beta", generation())
     assert fixture.sends[-1][1]["preview"] == {
-        "title": "Tryb ON/OFF", "body": "Poprawka dziedziczenia ON/OFF…",
+        "title": "Tryb ON/OFF", "body": "Poprawka dziedziczenia ON/OFF jest gotowa.",
     }
-    _preview_turn(fixture, monkeypatch, "Wynik ON/OFF private recording.png",
-                  title="Inny tryb ON/OFF", request_id="on-off-private")
+    visible_path = "Synthetic Archive ON/OFF"
+    _preview_turn(fixture, monkeypatch, visible_path, title=visible_path, request_id="visible-spaced-path")
+    assert fixture.runner.web_push.deliver_one(fixture.beta, "beta", generation())
+    assert fixture.sends[-1][1]["preview"] == {"title": visible_path, "body": visible_path}
+
+    assert _act(fixture.browser, "privacy", "beta", {"preview": False}).json() == {"preview": False}
+    _preview_turn(fixture, monkeypatch, visible_path, title="/synthetic/report.pdf", request_id="visible-opt-out")
     assert fixture.runner.web_push.deliver_one(fixture.beta, "beta", generation())
     assert "preview" not in fixture.sends[-1][1]
 
 
 @pytest.mark.parametrize("source", [
-    "/synthetic/ON/OFF private recording.png",
-    "../ON/OFF private recording.png",
-    "./ON/OFF",
-    "synthetic private/ON/OFF",
-    "ON/OFF private recording.png",
-    "ON/OFF / private recording.png",
-    "ON/OFF.png",
-    "prefix-ON/OFF",
-    "OFF/ON",
-    "ON/OTHER",
-    "on/off",
-    "file: ON/OFF private recording",
-    "sandbox: ON/OFF private recording",
-    r"C:\ON\OFF private recording.png",
-    r"\\server\ON\OFF private recording",
-    "C: ON/OFF private recording",
-    "C%3A ON/OFF private recording",
-    "C:%5CON%5COFF secret",
-    "file%3A%2FON%2FOFF secret",
-    "%252FON%252FOFF private recording",
-    "ON%2FOFF private recording",
-    "&#47;ON&#47;OFF private recording.png",
-    "![private attachment][unresolved]",
+    "/synthetic/report.pdf",
+    "../synthetic/archive report.pdf",
+    "Synthetic Archive ON/OFF",
+    r"C:\Synthetic Work\recording.png",
+    "C:%5CSynthetic%5Crecording",
+    "file%3A%2Fsynthetic%2Frecording",
+    "%252Fsynthetic%252Frecording",
+    "sandbox:/synthetic/recording.png",
 ])
-def test_on_off_does_not_exempt_paths_or_unresolved_media_in_body_or_title(source):
-    assert make_preview(None, "Wynik " + source) is None
-    assert make_preview("Wynik " + source, "Treść jawna.") == {"body": "Treść jawna."}
+def test_visible_paths_are_literal_in_body_and_title(source):
+    visible = "Wynik " + source
+    assert make_preview(visible, visible) == {"title": visible, "body": visible}
 
 
-def test_on_off_leaves_no_ambiguous_extensionless_suffix_or_media_directive():
-    assert make_preview(None, "Wynik ON/OFF synthetic private suffix") == {"body": "Wynik ON/OFF…"}
-    assert make_preview("Tryb ON/OFF.", "Wynik ON/OFF.\nMEDIA: /synthetic private/ON/OFF.png") == {
-        "title": "Tryb ON/OFF.", "body": "Wynik ON/OFF.",
+def test_visible_paths_do_not_restore_technical_attachment_text():
+    assert make_preview("Tryb ON/OFF. ![ukryty tytuł][unresolved]",
+                        "Wynik [plik](sandbox:/synthetic/attachment.png).\n"
+                        "MEDIA: /synthetic private/ON/OFF.png\n[[as_document]]\n"
+                        "Sprawdź /synthetic/visible.txt.") == {
+        "body": "Wynik plik. Sprawdź /synthetic/visible.txt.",
     }

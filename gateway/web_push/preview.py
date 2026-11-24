@@ -14,11 +14,6 @@ _HIDDEN_TAG = re.compile(r"</?((?:[\w.-]+:)?(?:" + "|".join(_HIDDEN_NAMES) + r")
                          re.IGNORECASE)
 _MEDIA = re.compile(r"\bMEDIA:[^\n]*|\[\[(?:audio_as_voice|as_document)\]\]", re.IGNORECASE)
 _URL = re.compile(r"\b(?:https?://|data:)[^\s<>]+", re.IGNORECASE)
-_PATH = re.compile(r"""\b(?:file:|sandbox:)|(?<!\w)(?:[A-Za-z]:)?(?:[\w.~%+-]*[/\\])+[^\s<>"']+""",
-                   re.IGNORECASE)
-_ENCODED_PATH = re.compile(r"%(?:25)*(?:2f|5c)|\b(?:file|sandbox)%(?:25)*3a", re.IGNORECASE)
-_NEUTRAL_ON_OFF = re.compile(r"(?<!\S)ON/OFF(?=[.,!?;]*(?:\s|$))")
-_PATH_NEAR_ON_OFF = re.compile(r"[/\\]|\.[\w~%+-]|\b[A-Z](?::|%(?:25)*3a)", re.IGNORECASE)
 _AMBIGUOUS_HIDDEN = re.compile(r"`|<!--|(?<!\w)['\"]")
 _UNSAFE_CHARS = re.compile(r"[\x00-\x08\x0e-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069\ud800-\udfff]")
 
@@ -57,18 +52,9 @@ def _plain(text, limit):
                 for child in token.children or () if child.type in {"text", "softbreak", "hardbreak", "image", "code_inline"}
             ))
     visible = _URL.sub(" ", " ".join(lines))
-    option = _NEUTRAL_ON_OFF.search(visible)
-    path_text = visible
-    if option:
-        path_text = visible[:option.start()] + " " + visible[option.end():]
-        if _PATH_NEAR_ON_OFF.search(path_text):
-            return ""
-    if _PATH.search(path_text) or _ENCODED_PATH.search(path_text) or "![" in visible:
-        # A bare path may contain spaces, and unresolved image syntax can retain private alt text.
+    if "![" in visible:
+        # Unresolved image syntax can retain private alt text.
         return ""
-    if option and visible[option.end():].strip().strip(".,!?;"):
-        # Even an extensionless path can have a private suffix after the neutral token.
-        visible = visible[:option.end()] + "…"
     value = " ".join(_UNSAFE_CHARS.sub("", visible).split())
     return value if len(value) <= limit else value[:limit - 1].rstrip() + "…"
 

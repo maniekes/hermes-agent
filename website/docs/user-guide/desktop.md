@@ -176,11 +176,14 @@ acknowledge it during a short grace period to avoid an OS alert. Locking or clos
 completion may race this check. Chrome displays each received Push using the device's sound settings.
 The alert opens the conversation after sign-in if necessary. By default it shows a generic message
 and leaves out the conversation title. **Show message previews** opts this Chrome installation and
-profile into showing a short title and part of the final reply on the lock screen. The choice belongs
-to the current enrollment and starts off again if it needs to be replaced. Turning previews off also
+profile into showing a short title and part of the final reply on the lock screen. Visible file paths
+and filenames in that text may appear in the preview. The choice belongs to the current enrollment
+and starts off again if it needs to be replaced. Turning previews off also
 applies to queued deliveries and retries. The gateway waits briefly for a reserved preview attempt
 before confirming the change. A timeout leaves that attempt uncertain, and an alert already dispatched
-may still show a preview. Ambiguous hidden markup, media paths and overlong source text use a generic alert.
+may still show a preview. The preview strips hidden blocks, technical media directives and link
+destinations. Ambiguous hidden markup, unresolved image markup and overlong reply text can produce
+a generic alert.
 
 **Settings → Notifications → Response ready default (profile name)** applies to conversations set
 to **Inherit** in that profile. The default starts **Off** and is shared across devices. Each
