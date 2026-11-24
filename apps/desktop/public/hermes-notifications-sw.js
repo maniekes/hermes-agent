@@ -36,28 +36,55 @@ self.addEventListener('message', event => {
 })
 
 const PUSH_CLICK_WAIT_MS = 1000
+const PUSH_CLICK_RESULT_GRACE_MS = 250
 let latestPushClick = 0
+let pendingPushCommit
 
-function preparePushClient(client, data, id, proof, deadline) {
+function until(deadline, pending) {
+  let timer
+  const timeLimit = new Promise(resolve => { timer = setTimeout(resolve, Math.max(0, deadline - Date.now())) })
+
+  return Promise.race([pending, timeLimit]).finally(() => clearTimeout(timer))
+}
+
+function preparePushClient(client, data, id, proof, deadline, commitBy) {
   const { port1, port2 } = new MessageChannel()
 
   return new Promise(resolve => {
     const finish = ready => {
       clearTimeout(timer)
-      port1.onmessage = null
-      if (!ready) { port1.close() }
-      resolve(ready ? { client, port: port1 } : null)
+      if (!ready) {
+        port1.onmessage = null
+        port1.close()
+        resolve(null)
+        return
+      }
+
+      let settle
+      const result = new Promise(resolveResult => { settle = resolveResult })
+      const candidate = { client, port: port1, outcome: undefined, result }
+      port1.onmessage = ({ data: reply }) => {
+        if (!candidate.outcome && (reply?.outcome === 'applied' || reply?.outcome === 'rejected')) {
+          candidate.outcome = reply.outcome
+          settle(reply.outcome)
+        }
+      }
+      resolve(candidate)
     }
     const timer = setTimeout(() => finish(false), Math.max(0, deadline - Date.now()))
-    port1.onmessage = ({ data: reply }) => finish(reply?.ready === true && reply.id === id && Date.now() < deadline)
+    port1.onmessage = ({ data: reply }) => finish(
+      reply?.ready === true && reply.version === 2 && reply.id === id && Date.now() < deadline
+    )
 
     try {
       client.postMessage({
         type: 'hermes:prepare-push-click',
+        version: 2,
         proof,
         profile: data.pushProfile,
         session: data.pushSession,
-        deadline
+        deadline,
+        commitBy
       }, [port2])
     } catch {
       port2.close()
@@ -66,7 +93,30 @@ function preparePushClient(client, data, id, proof, deadline) {
   })
 }
 
+async function commitPushClick(candidate, commitBy, click) {
+  if (candidate.outcome || Date.now() >= commitBy) { return false }
+
+  const { client, port, result } = candidate
+  const focused = await until(commitBy, Promise.race([client.focus(), result.then(() => null)]))
+  if (focused?.id !== client.id || candidate.outcome || click !== latestPushClick || Date.now() >= commitBy) {
+    return false
+  }
+
+  port.postMessage({ open: true })
+  const pending = until(commitBy + PUSH_CLICK_RESULT_GRACE_MS, result)
+  pendingPushCommit = pending
+  const outcome = await pending
+  if (pendingPushCommit === pending) { pendingPushCommit = undefined }
+
+  // Silence after dispatch can mean navigation ran but its acknowledgement was lost.
+  return outcome !== 'rejected'
+}
+
 async function openPushTarget(data, target, id, click) {
+  // An older dispatched command can still apply until its lease expires.
+  await pendingPushCommit
+  if (click !== latestPushClick) { return }
+
   if (target.searchParams.has('pushSession') && id) {
     let ready = []
     try {
@@ -79,19 +129,12 @@ async function openPushTarget(data, target, id, click) {
         const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(id))
         const proof = Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('')
         const deadline = Date.now() + PUSH_CLICK_WAIT_MS
-        ready = (await Promise.all(candidates.map(client => preparePushClient(client, data, id, proof, deadline)))).filter(Boolean)
-      }
-      if (ready.length === 1 && click === latestPushClick) {
-        const { client, port } = ready[0]
-        const focused = await client.focus()
-        if (focused?.id === client.id && click === latestPushClick) {
-          // Once dispatched, an unconfirmed renderer action must not open a second window.
-          port.postMessage({ open: true })
-          return
-        }
+        const commitBy = deadline + PUSH_CLICK_WAIT_MS
+        ready = (await Promise.all(candidates.map(client => preparePushClient(client, data, id, proof, deadline, commitBy)))).filter(Boolean)
+        if (ready.length === 1 && click === latestPushClick && await commitPushClick(ready[0], commitBy, click)) { return }
       }
     } catch {
-      // Closed, unsupported or unresponsive candidates leave the login-safe cold path.
+      // A client that could not be focused or dispatched to leaves the login-safe cold path.
     } finally {
       for (const candidate of ready) { candidate.port.close() }
     }

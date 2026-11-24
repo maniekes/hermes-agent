@@ -184,10 +184,11 @@ it('focuses the unique live admitting document without opening a new document', 
     postMessage: vi.fn((_, [port]) => {
       port.onmessage = ({ data }: { data: unknown }) => {
         activated(data)
+        port.postMessage({ outcome: 'applied' })
         port.close()
       }
 
-      port.postMessage({ ready: true, id, clientId: 'irrelevant-claimed-id' })
+      port.postMessage({ ready: true, version: 2, id, clientId: 'irrelevant-claimed-id' })
     })
   }
 
@@ -206,13 +207,13 @@ it('focuses the unique live admitting document without opening a new document', 
   await vi.waitFor(() => expect(activated).toHaveBeenCalledWith({ open: true }))
 })
 
-it.each(['ambiguous', 'closed', 'silent', 'declined', 'spoofed'])('keeps the cold link when the initiating document is %s', async scenario => {
+it.each(['ambiguous', 'closed', 'silent', 'declined', 'spoofed', 'legacy'])('keeps the cold link when the initiating document is %s', async scenario => {
   const { clients, send } = worker()
   const base = 'https://hermes.example/webapp/'
 
   const make = (id: string, ready: boolean | undefined, url = base, frameType = 'top-level') => ({
     id, url, frameType, focus: vi.fn(), postMessage: vi.fn((_, [port]) => {
-      if (ready !== undefined) { port.postMessage({ ready, id: (scenario === 'spoofed' ? '7' : '5').repeat(32) }) }
+      if (ready !== undefined) { port.postMessage({ ready, version: scenario === 'legacy' ? undefined : 2, id: (scenario === 'spoofed' ? '7' : '5').repeat(32) }) }
       port.close()
     })
   })
@@ -271,4 +272,98 @@ it('drops an older clustered click still awaiting a live document', async () => 
 
   expect(focused).not.toHaveBeenCalled()
   expect(clients.openWindow).toHaveBeenCalledExactlyOnceWith('https://hermes.example/webapp/?profile=work&pushSession=latest')
+})
+
+
+it.each(['rejected', 'missing', 'missing alone'])('handles a %s terminal result without opening the original target twice', async outcome => {
+  const { clients, send } = worker()
+  const id = '8'.repeat(32)
+  const applied = vi.fn()
+  let complete!: () => void
+  let closePort!: () => void
+
+  const candidate = {
+    id: 'original',
+    frameType: 'top-level',
+    url: 'https://hermes.example/webapp/',
+    focus: vi.fn(),
+    postMessage: vi.fn((_, [port]) => {
+      closePort = () => port.close()
+
+      port.onmessage = () => {
+        complete = () => port.postMessage({ outcome: 'rejected' })
+
+        if (outcome !== 'rejected') { applied() }
+      }
+
+      port.postMessage({ ready: true, id, version: 2 })
+    })
+  }
+
+  candidate.focus.mockResolvedValue(candidate)
+  clients.matchAll.mockResolvedValueOnce([candidate]).mockResolvedValueOnce([])
+
+  const click = (session: string) => send('notificationclick', {
+    notification: { close: vi.fn(), tag: `hermes:push:${id}`, data: {
+      push: true, pushProfile: 'work', pushSession: session
+    } }
+  })
+
+  const earlier = click('earlier')
+
+  try {
+    await vi.waitFor(() => expect(complete).toBeTypeOf('function'))
+    const later = outcome === 'missing alone' ? undefined : click('later')
+    // The newer click cannot even probe while the earlier command can still apply.
+    await Promise.resolve()
+    expect(clients.matchAll).toHaveBeenCalledOnce()
+    expect(clients.openWindow).not.toHaveBeenCalled()
+
+    if (outcome === 'rejected') { complete() }
+    await Promise.all([earlier, later])
+
+    expect(applied).toHaveBeenCalledTimes(outcome === 'rejected' ? 0 : 1)
+
+    if (later) {
+      expect(clients.openWindow).toHaveBeenCalledExactlyOnceWith('https://hermes.example/webapp/?profile=work&pushSession=later')
+    } else {
+      expect(clients.openWindow).not.toHaveBeenCalled()
+    }
+  } finally {
+    closePort?.()
+  }
+})
+
+it('falls back once on an explicit rejection after dispatch', async () => {
+  const { clients, send } = worker()
+  const id = '9'.repeat(32)
+  const dispatched = vi.fn()
+
+  const candidate = {
+    id: 'original',
+    frameType: 'top-level',
+    url: 'https://hermes.example/webapp/',
+    focus: vi.fn(),
+    postMessage: vi.fn((_, [port]) => {
+      port.onmessage = () => {
+        dispatched()
+        port.postMessage({ outcome: 'rejected' })
+        port.close()
+      }
+
+      port.postMessage({ ready: true, version: 2, id })
+    })
+  }
+
+  candidate.focus.mockResolvedValue(candidate)
+  clients.matchAll.mockResolvedValue([candidate])
+
+  await send('notificationclick', {
+    notification: { close: vi.fn(), tag: `hermes:push:${id}`, data: {
+      push: true, pushProfile: 'work', pushSession: 'old-chat'
+    } }
+  })
+
+  expect(dispatched).toHaveBeenCalledOnce()
+  expect(clients.openWindow).toHaveBeenCalledExactlyOnceWith('https://hermes.example/webapp/?profile=work&pushSession=old-chat')
 })

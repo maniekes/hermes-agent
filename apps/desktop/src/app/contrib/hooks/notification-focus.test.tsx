@@ -120,7 +120,10 @@ it('a native click reveals the existing remote Bot tab without changing its owne
   expect(navigate).toHaveBeenCalledWith(sessionRoute('main-chat'), { replace: true })
 })
 
-it.each(['authorized', 'wrong profile', 'expired', 'not the admitting document', 'stale at activation'])(
+const scenarios = ['authorized', 'wrong profile', 'expired', 'not the admitting document', 'stale at activation',
+  'expired commit', 'listener removed']
+
+it.each(scenarios)(
   'handles a Web Push offer at the live renderer boundary (%s)',
   async scenario => {
     const serviceWorker = new EventTarget()
@@ -152,8 +155,7 @@ it.each(['authorized', 'wrong profile', 'expired', 'not the admitting document',
     const draft = 'Unsent text in another conversation'
     setComposerDraft(draft)
 
-    const admission = (['authorized', 'wrong profile', 'expired', 'not the admitting document', 'stale at activation']
-      .indexOf(scenario) + 1).toString().repeat(32)
+    const admission = (scenarios.indexOf(scenario) + 1).toString().repeat(32)
 
     if (scenario !== 'not the admitting document') {
       trackBrowserNotificationTurn('notification-submit')
@@ -188,20 +190,27 @@ it.each(['authorized', 'wrong profile', 'expired', 'not the admitting document',
     port1.on('close', () => { settled = true })
 
     try {
+      const deadline = Date.now() + 950
+      const commitBy = deadline + 1000
       act(() => serviceWorker.dispatchEvent(Object.assign(new Event('message'), {
         source: new WorkerSource(),
         ports: [port2],
-        data: { type: 'hermes:prepare-push-click', deadline: Date.now() + 950, proof: createHash('sha256').update(admission).digest('hex'),
+        data: { type: 'hermes:prepare-push-click', version: 2, deadline, commitBy, proof: createHash('sha256').update(admission).digest('hex'),
           profile: scenario === 'wrong profile' ? 'other' : 'work', session: 'old-chat' }
       })))
-      const canCommit = scenario === 'authorized' || scenario === 'stale at activation'
-      await vi.waitFor(() => expect(response).toEqual(canCommit ? { ready: true, id: admission } : { ready: false }), { timeout: 850 })
+      const canCommit = ['authorized', 'stale at activation', 'expired commit', 'listener removed'].includes(scenario)
+      await vi.waitFor(() => expect(response).toEqual(canCommit ? { ready: true, version: 2, id: admission } : { ready: false }), { timeout: 850 })
       expect($sessionTiles.get()).toHaveLength(0)
 
       if (scenario === 'stale at activation') { $connection.set({ ...prior, profile: 'other' }) }
 
+      if (scenario === 'expired commit') { vi.spyOn(Date, 'now').mockReturnValue(commitBy + 1) }
+
+      if (scenario === 'listener removed') { unmount() }
+
       if (canCommit) {
         port1.postMessage({ open: true })
+        await vi.waitFor(() => expect(response).toEqual({ outcome: scenario === 'authorized' ? 'applied' : 'rejected' }))
         await vi.waitFor(() => expect(settled).toBe(true))
       }
 

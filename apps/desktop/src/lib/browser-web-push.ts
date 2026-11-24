@@ -230,6 +230,7 @@ export function acknowledgeBrowserPush(admissionId: string, profile?: string) {
 const PUSH_CLICK_CONFIRM_MS = 1000
 
 interface BrowserPushClick {
+  commitBy: number
   deadline: number
   profile: string
   proof: string
@@ -240,9 +241,12 @@ const pushTargetPart = (value: unknown): value is string =>
   typeof value === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(value)
 
 function isPushClick(value: Record<string, unknown>): value is Record<string, unknown> & BrowserPushClick {
-  return typeof value.proof === 'string' && /^[0-9a-f]{64}$/.test(value.proof) &&
+  const now = Date.now()
+
+  return value.version === 2 && typeof value.proof === 'string' && /^[0-9a-f]{64}$/.test(value.proof) &&
     pushTargetPart(value.profile) && pushTargetPart(value.session) && typeof value.deadline === 'number' &&
-    Number.isFinite(value.deadline) && value.deadline > Date.now() && value.deadline <= Date.now() + PUSH_CLICK_CONFIRM_MS
+    value.deadline > now && value.deadline <= now + PUSH_CLICK_CONFIRM_MS &&
+    value.commitBy === value.deadline + PUSH_CLICK_CONFIRM_MS
 }
 
 /** Offer/commit runs only for a click. The live view never follows an unverified payload. */
@@ -282,25 +286,34 @@ export function onBrowserPushClick(
     }
 
     const controller = new AbortController()
+    let ready = false
+    let settled = false
 
-    const finish = () => {
+    const release = () => {
       window.clearTimeout(timer)
-      pending.delete(finish)
+      pending.delete(reject)
       controller.abort()
       port.close()
     }
 
-    const timer = window.setTimeout(finish, Math.max(0, data.deadline + PUSH_CLICK_CONFIRM_MS - Date.now()))
-    pending.add(finish)
+    const reject = () => {
+      if (settled) { return }
+
+      settled = true
+      port.postMessage(ready ? { outcome: 'rejected' } : { ready: false })
+      release()
+    }
+
+    const timer = window.setTimeout(reject, Math.max(0, data.commitBy - Date.now()))
+    pending.add(reject)
 
     try {
       // The offer carries a digest so a reply cannot just echo the receipt
       // ID. Use this document's receipts and check the server's scope too.
       const id = await findBrowserPushAdmission(data.proof)
 
-      if (!id || Date.now() >= data.deadline || !eligible(data)) {
-        port.postMessage({ ready: false })
-        finish()
+      if (!id || settled || Date.now() >= data.deadline || !eligible(data)) {
+        reject()
 
         return
       }
@@ -319,16 +332,32 @@ export function onBrowserPushClick(
 
       const allowed = response.ok && (await response.json()).allowed === true
 
-      if (allowed && Date.now() < data.deadline && eligible(data) && ownsBrowserPushAdmission(id)) {
+      if (allowed && !settled && Date.now() < data.deadline && eligible(data) && ownsBrowserPushAdmission(id)) {
         port.onmessage = ({ data: choice }) => {
+          if (settled || choice?.open !== true) { return }
+
+          if (Date.now() >= data.commitBy || !eligible(data) || !ownsBrowserPushAdmission(id)) {
+            reject()
+
+            return
+          }
+
+          // Navigation can synchronously dispose the listener. From this point
+          // a missing result is uncertain, never a safe rejection.
+          settled = true
+
           try {
-            if (choice?.open === true && Date.now() < data.deadline + PUSH_CLICK_CONFIRM_MS && eligible(data) && ownsBrowserPushAdmission(id)) { open(data.session) }
+            open(data.session)
+            port.postMessage({ outcome: 'applied' })
+          } catch {
+            // The route or pane may already have changed.
           } finally {
-            finish()
+            release()
           }
         }
 
-        port.postMessage({ ready: true, id })
+        ready = true
+        port.postMessage({ ready: true, id, version: 2 })
 
         return
       }
@@ -336,8 +365,7 @@ export function onBrowserPushClick(
       // No usable authorization for the warm path.
     }
 
-    port.postMessage({ ready: false })
-    finish()
+    reject()
   }
 
   const onMessage = (event: MessageEvent) => {
