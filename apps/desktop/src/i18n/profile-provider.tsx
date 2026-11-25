@@ -1,3 +1,5 @@
+import './pl_notifications'
+
 import { useStore } from '@nanostores/react'
 import { type ReactNode, useEffect } from 'react'
 

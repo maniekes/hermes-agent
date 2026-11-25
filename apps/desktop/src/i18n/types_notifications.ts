@@ -2,6 +2,8 @@
 export interface NotificationSettingsTranslations {
   title: string
   intro: string
+  device?: string
+  conversationDefaults?: string
   enableAll: string
   enableAllDesc: string
   focusedHint: string
@@ -22,6 +24,9 @@ export interface NotificationSettingsTranslations {
     title: string
     enable: string
     repair: string
+    needsRepair?: string
+    turnDoneOff?: string
+    retry?: string
     setup: string
     active: string
     unavailable: string
@@ -37,6 +42,14 @@ export interface NotificationSettingsTranslations {
   testSent: string
   testUnsupported: string
   testFailed: string
+  testStatus?: {
+    masterOff: string
+    checking: string
+    busy: string
+    statusFailed: string
+    needsSetup: string
+    needsRepair: string
+  }
   muteSoundsTitle: string
   muteSoundsDesc: string
   completionSoundTitle: string

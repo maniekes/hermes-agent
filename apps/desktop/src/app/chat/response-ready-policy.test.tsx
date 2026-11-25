@@ -1,6 +1,9 @@
+import '@/i18n/pl_notifications'
+
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, expect, it, vi } from 'vitest'
 
+import { I18nProvider } from '@/i18n'
 import { $notifications, clearNotifications } from '@/store/notifications'
 
 import { ResponseReadyPolicyPicker } from './response-ready-policy'
@@ -20,7 +23,7 @@ it('selects the conversation policy only after durable readback', async () => {
   render(<ResponseReadyPolicyPicker request={request} sessionId="chat-a" />)
   const picker = await screen.findByRole<HTMLSelectElement>('combobox', { name: 'Response ready' })
   expect(picker.value).toBe('inherit')
-  expect(screen.getByRole('option', { name: 'Inherit (off)' })).toBeTruthy()
+  expect(screen.getByRole('option', { name: 'Default (off)' })).toBeTruthy()
 
   fireEvent.change(picker, { target: { value: 'on' } })
   expect(request).toHaveBeenNthCalledWith(2, 'session.mutate', {
@@ -135,11 +138,31 @@ it('shows the inherited profile value after focus without changing the conversat
   render(<ResponseReadyPolicyPicker request={request} sessionId="chat-a" />)
   const picker = await screen.findByRole<HTMLSelectElement>('combobox')
   expect(picker.value).toBe('inherit')
-  expect(screen.getByRole('option', { name: 'Inherit (off)' })).toBeTruthy()
+  expect(screen.getByRole('option', { name: 'Default (off)' })).toBeTruthy()
   await act(async () => { fireEvent.focus(window) })
-  expect(screen.getByRole('option', { name: 'Inherit (on)' })).toBeTruthy()
+  expect(screen.getByRole('option', { name: 'Default (on)' })).toBeTruthy()
   expect(picker.value).toBe('inherit')
   expect(request.mock.calls.every(([method]) => method === 'session.info')).toBe(true)
   await act(async () => { fireEvent.focus(window) })
   expect(screen.queryByRole('combobox')).toBeNull()
+})
+
+it('shows Polish effective defaults and keeps inherit as the wire value', async () => {
+  const request = vi.fn()
+    .mockResolvedValueOnce({ response_ready_policy: { effective: 'off', mode: 'off', revision: 2 } })
+    .mockResolvedValueOnce({})
+    .mockResolvedValueOnce({ response_ready_policy: { default: 'on', effective: 'on', mode: 'inherit', revision: 3 } })
+
+  render(
+    <I18nProvider configClient={null} initialLocale="pl">
+      <ResponseReadyPolicyPicker request={request} sessionId="chat-a" />
+    </I18nProvider>
+  )
+  const picker = await screen.findByRole<HTMLSelectElement>('combobox', { name: 'Powiadomienia o odpowiedzi' })
+  expect(screen.getByRole<HTMLOptionElement>('option', { name: 'Domyślne (wył.)' }).value).toBe('inherit')
+  await act(async () => { fireEvent.change(picker, { target: { value: 'inherit' } }) })
+  expect(request).toHaveBeenNthCalledWith(2, 'session.mutate', expect.objectContaining({
+    expected_revision: 2, payload: { mode: 'inherit' }
+  }))
+  expect(picker.selectedOptions[0].textContent).toBe('Domyślne (wł.)')
 })

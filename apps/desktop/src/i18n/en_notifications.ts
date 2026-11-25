@@ -1,20 +1,22 @@
 // Notification settings copy used when the desktop locale loads.
 export const enNotifications = {
   title: 'Notifications',
-  intro: 'OS notifications (not in-app toasts). Per device.',
+  intro: 'Manage system notifications.',
+  device: 'This device',
+  conversationDefaults: 'Conversation defaults',
   enableAll: 'Enable notifications',
-  enableAllDesc: 'Off silences every notification below.',
+  enableAllDesc: 'Off silences system notifications on this device.',
   webPushPolicy: {
     title: 'Response ready',
-    inherit: 'Inherit (off)',
-    inheritOn: 'Inherit (on)',
+    inherit: 'Default (off)',
+    inheritOn: 'Default (on)',
     on: 'On',
     off: 'Off',
-    failed: 'The conversation notification policy could not be saved.'
+    failed: 'The conversation notification setting could not be saved. Try again.'
   },
   webPushProfileDefault: {
     label: 'Response ready default ({profile})',
-    description: 'Shared across devices. Used by conversations set to Inherit.',
+    description: 'Applies across devices to new and existing conversations set to Default in this profile.',
     failed: 'The profile default could not be saved.',
     unavailable: 'The profile default could not be read.'
   },
@@ -61,7 +63,7 @@ export const enNotifications = {
       default:
         'Show alerts from this browser while the tab is in the background. Until you allow it, only the tab title flashes.',
       granted: 'Allowed. Alerts show while this tab is in the background; the tab title flashes too.',
-      denied: "Blocked in this browser's site settings. The tab title still flashes.",
+      denied: "Blocked in this browser. Allow notifications in this site’s settings.",
       insecure: 'Needs HTTPS, such as Tailscale serve. Over plain HTTP the tab title still flashes.',
       unsupported: 'This browser cannot show notifications. The tab title still flashes.'
     }
@@ -71,20 +73,31 @@ export const enNotifications = {
     enable: 'Set up on this device',
     repair: 'Repair',
     setup: 'Set up Web Push for the current profile. Other notification kinds keep their existing behavior.',
-    active: 'Web Push is active for this profile. Hermes tries to skip the alert when you are reading the completed response.',
-    unavailable: 'Web Push status is unavailable. Reload Hermes or try again.',
+    active: 'Web Push is active for this profile on this device.',
+    needsRepair: 'Reconnect background notifications on this device.',
+    turnDoneOff: 'Turn on Response ready below to set up background notifications.',
+    retry: 'Retry status',
+    unavailable: 'Could not read background notification status.',
     failed: 'Web Push settings could not be saved. Try again.',
-    queued: 'Push test queued. Check this device for the notification.',
+    queued: 'Push test queued. If nothing appears, check system notification permissions and Focus/Do Not Disturb.',
     recent: 'A Push test finished recently. Wait a moment before sending another.',
     revocationPending: 'A Push send may still be in progress. Retry to confirm disabling Web Push.',
     sound: 'Web Push sound follows this device’s notification settings.'
   },
   test: 'Send test notification',
   testTitle: 'Hermes',
-  testBody: 'Notifications are working.',
+  testBody: 'This is a test notification.',
   testSent: 'Test sent. If nothing appears, check your OS notification permissions and Focus/Do Not Disturb.',
   testUnsupported: 'This system does not support native notifications.',
-  testFailed: 'The test notification failed to send. Reload Hermes and try again.',
+  testFailed: 'The test notification failed to send. Try again.',
+  testStatus: {
+    masterOff: 'Turn on notifications on this device first.',
+    checking: 'Checking background notification status…',
+    busy: 'Wait for the notification settings to finish updating.',
+    statusFailed: 'Retry the status check before sending a test.',
+    needsSetup: 'Set up background notifications on this device to send a test.',
+    needsRepair: 'Repair background notifications on this device to send a test.'
+  },
   muteSoundsTitle: 'Mute interface sounds',
   muteSoundsDesc:
     'Silences automatic completion, wake-word and thinking cues, haptic feedback, and OS notification sounds. Sound previews and spoken replies still play.',

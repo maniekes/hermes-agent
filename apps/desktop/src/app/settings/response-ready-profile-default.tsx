@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { useI18n } from '@/i18n'
+import { enNotifications } from '@/i18n/en_notifications'
 import { readProfileDefault, type ResponseReadyProfileDefault, writeProfileDefault } from '@/lib/browser-web-push'
 import { notify } from '@/store/notifications'
 
@@ -13,7 +14,9 @@ interface ReadState {
 
 export function ResponseReadyProfileDefaultRow({ profile }: { profile: string }) {
   const { t } = useI18n()
-  const copy = t.settings.notifications.webPushProfileDefault
+  const notifications = t.settings.notifications
+  const title = notifications.conversationDefaults ?? enNotifications.conversationDefaults
+  const copy = notifications.webPushProfileDefault
   const label = copy.label.replace('{profile}', profile)
   const [state, setState] = useState<ReadState>({})
   const [busy, setBusy] = useState(false)
@@ -64,15 +67,20 @@ export function ResponseReadyProfileDefaultRow({ profile }: { profile: string })
     if (!saved || confirmed.value?.enabled !== enabled) { notify({ kind: 'error', message: copy.failed }) }
   }
 
-  if (state.failed) { return <ListRow description={copy.unavailable} title={label} /> }
+  if (!state.failed && !state.value) { return null }
 
-  if (!state.value) { return null }
-
-  return <ToggleRow
-    checked={state.value.enabled}
-    description={copy.description}
-    disabled={busy}
-    label={label}
-    onChange={enabled => void change(enabled)}
-  />
+  return (
+    <section aria-label={title} className="mt-5 border-t border-(--ui-border) pt-3">
+      <h3 className="mb-1 text-sm font-medium">{title}</h3>
+      {state.value ? (
+        <ToggleRow
+          checked={state.value.enabled}
+          description={copy.description}
+          disabled={busy}
+          label={label}
+          onChange={enabled => void change(enabled)}
+        />
+      ) : <ListRow description={copy.unavailable} title={label} />}
+    </section>
+  )
 }

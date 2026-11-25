@@ -1,17 +1,22 @@
+import '@/i18n/pl_notifications'
+
 // Both Settings actions that can ask for browser notification permission must
 // leave the permission row showing the answer, not the snapshot it mounted with.
-import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
+import { I18nProvider, useI18n } from '@/i18n'
 import { browserPushStatus, disableBrowserPush, enableBrowserPush, setBrowserPushPreview, testBrowserPush } from '@/lib/browser-web-push'
 import { $nativeNotifyPrefs, sendTestNativeNotification, setNativeNotifyEnabled, setNativeNotifyKind } from '@/store/native-notifications'
 import { notify } from '@/store/notifications'
 import { $activeGatewayProfile } from '@/store/profile'
+import { $connection } from '@/store/session'
 
 import { NotificationsSettings } from './notifications-settings'
 
-const { readProfileDefault, writeProfileDefault } = vi.hoisted(() => ({
+const { hostHas, readProfileDefault, writeProfileDefault } = vi.hoisted(() => ({
+  hostHas: vi.fn((name: string) => name === 'browserNotifications'),
   readProfileDefault: vi.fn(),
   writeProfileDefault: vi.fn()
 }))
@@ -25,7 +30,7 @@ vi.mock('@/lib/browser-web-push', () => ({
   testBrowserPush: vi.fn(),
   writeProfileDefault
 }))
-vi.mock('@/lib/host-capabilities', () => ({ hostHas: (name: string) => name === 'browserNotifications' }))
+vi.mock('@/lib/host-capabilities', () => ({ hostHas }))
 vi.mock('@/store/notifications', () => ({ notify: vi.fn() }))
 vi.mock('@/store/native-notifications', async () => {
   const { atom } = await import('nanostores')
@@ -50,14 +55,20 @@ class FakeNotification {
 }
 
 beforeEach(() => {
+  $connection.set(null)
   $activeGatewayProfile.set('default')
   $nativeNotifyPrefs.set({ ...$nativeNotifyPrefs.get(), enabled: true })
+  hostHas.mockClear().mockImplementation(name => name === 'browserNotifications')
   readProfileDefault.mockReset().mockResolvedValue(undefined)
   writeProfileDefault.mockReset()
+  vi.mocked(setNativeNotifyEnabled).mockClear()
+  vi.mocked(setNativeNotifyKind).mockClear()
+  vi.mocked(setBrowserPushPreview).mockReset()
   vi.mocked(browserPushStatus).mockReset().mockResolvedValue({ active: false, available: false })
   vi.mocked(disableBrowserPush).mockReset().mockResolvedValue(undefined)
   vi.mocked(enableBrowserPush).mockReset().mockResolvedValue(undefined)
   vi.mocked(testBrowserPush).mockReset().mockResolvedValue('queued')
+  FakeNotification.answer = 'granted'
   FakeNotification.permission = 'default'
   FakeNotification.requestPermission.mockClear()
   vi.mocked(sendTestNativeNotification).mockReset().mockResolvedValue(true)
@@ -68,6 +79,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup()
+  $connection.set(null)
   $activeGatewayProfile.set('default')
   vi.unstubAllGlobals()
 })
@@ -87,17 +99,18 @@ it.each([
   FakeNotification.answer = answer
   renderAlerts()
   expect(screen.getByRole('button', { name: 'Allow' })).toBeTruthy()
-
-  await act(async () => {
-    fireEvent.click(screen.getByRole('button', { name: 'Send test notification' }))
-  })
+  await sendTest()
 
   expect(FakeNotification.requestPermission).toHaveBeenCalled()
   expect(screen.queryByRole('button', { name: 'Allow' })).toBeNull()
   expect(screen.getByText(state)).toBeTruthy()
+  expect(sendTestNativeNotification).toHaveBeenCalledTimes(answer === 'granted' ? 1 : 0)
+  expect(testBrowserPush).not.toHaveBeenCalled()
 })
 
 async function sendTest() {
+  const button = screen.getByRole<HTMLButtonElement>('button', { name: 'Send test notification' })
+  await waitFor(() => expect(button.disabled).toBe(false))
   await act(async () => {
     fireEvent.click(screen.getByRole('button', { name: 'Send test notification' }))
   })
@@ -142,7 +155,6 @@ it('reports a rejected permission request separately from a rejected send', asyn
   expect(notify).toHaveBeenLastCalledWith({ kind: 'info', message: expect.stringMatching(/test sent/i) })
 })
 
-
 it('enrolls only by explicit action and uses server delivery for the test', async () => {
   vi.mocked(browserPushStatus).mockResolvedValue({ active: false, available: true, publicKey: 'public' })
   FakeNotification.answer = 'granted'
@@ -175,7 +187,6 @@ it('disables server delivery from Response ready and from the main toggle', asyn
   expect(disableBrowserPush).toHaveBeenCalledWith(null, true)
 })
 
-
 it('disables local notifications on an older backend returning POST 405', async () => {
   vi.mocked(setNativeNotifyEnabled).mockClear()
   vi.mocked(browserPushStatus).mockResolvedValue({ active: false, available: false, legacyBackend: true })
@@ -197,6 +208,7 @@ it('refreshes stale enrollment when another tab has revoked it', async () => {
   await sendTest()
   expect(screen.queryByText(/Web Push is active for this profile/i)).toBeNull()
   expect(screen.getByRole('button', { name: 'Set up on this device' })).toBeTruthy()
+  expect(notify).toHaveBeenLastCalledWith({ kind: 'error', message: 'Set up background notifications on this device to send a test.' })
   expect(sendTestNativeNotification).not.toHaveBeenCalled()
 })
 
@@ -326,4 +338,164 @@ it('shows an unavailable status after failed profile default readback', async ()
   await act(async () => { fireEvent.click(row) })
   expect(screen.queryByRole('switch', { name: 'Response ready default (default)' })).toBeNull()
   expect(screen.getByText('The profile default could not be read.')).toBeTruthy()
+})
+
+const inactive = { active: false, available: true, conversationPolicy: true, publicKey: 'public' }
+const testButton = () => screen.getByRole<HTMLButtonElement>('button', { name: 'Send test notification' })
+
+it.each([
+  [false, inactive, 'Set up on this device', 'Turn on notifications on this device first.'],
+  [true, inactive, 'Set up on this device', 'Set up background notifications on this device to send a test.'],
+  [true, { ...inactive, needsRepair: true }, 'Repair', 'Repair background notifications on this device to send a test.']
+] as const)('explains the unavailable test (master %s, status %o)', async (enabled, status, action, hint) => {
+  $nativeNotifyPrefs.set({ ...$nativeNotifyPrefs.get(), enabled })
+  vi.mocked(browserPushStatus).mockResolvedValue(status)
+  renderAlerts()
+  const setup = await screen.findByRole<HTMLButtonElement>('button', { name: action })
+  expect(setup.disabled).toBe(!enabled)
+  expect(screen.getAllByText(hint).length).toBeGreaterThan(0)
+  expect(testButton().disabled).toBe(true)
+  fireEvent.click(testButton())
+  expect(testBrowserPush).not.toHaveBeenCalled()
+  expect(sendTestNativeNotification).not.toHaveBeenCalled()
+  expect(FakeNotification.requestPermission).not.toHaveBeenCalled()
+  expect(screen.queryByRole('switch', { name: 'Show message previews' })).toBeNull()
+})
+
+it.each([false, true])('retries only the status read with master enabled %s', async enabled => {
+  $nativeNotifyPrefs.set({ ...$nativeNotifyPrefs.get(), enabled })
+  vi.mocked(browserPushStatus).mockRejectedValueOnce(new Error('unreachable'))
+    .mockRejectedValueOnce(new Error('still unreachable'))
+    .mockResolvedValue(inactive)
+  renderAlerts()
+  const retry = await screen.findByRole<HTMLButtonElement>('button', { name: 'Retry status' })
+  expect(testButton().disabled).toBe(true)
+  expect(retry.disabled).toBe(false)
+  expect(testButton().getAttribute('aria-describedby')).toBeTruthy()
+  expect(screen.getByText(enabled ? 'Retry the status check before sending a test.' : 'Turn on notifications on this device first.')).toBeTruthy()
+  expect(screen.queryByRole('button', { name: 'Repair' })).toBeNull()
+  await act(async () => { fireEvent.click(retry) })
+  expect(screen.getByRole('button', { name: 'Retry status' })).toBeTruthy()
+  await act(async () => { fireEvent.click(retry) })
+  expect(vi.mocked(browserPushStatus).mock.calls).toEqual([[null], [null], [null]])
+  expect(screen.queryByRole('button', { name: 'Retry status' })).toBeNull()
+  expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Set up on this device' }).disabled).toBe(!enabled)
+  expect(testButton().disabled).toBe(true)
+  expect(FakeNotification.requestPermission).not.toHaveBeenCalled()
+  expect(enableBrowserPush).not.toHaveBeenCalled()
+  expect(disableBrowserPush).not.toHaveBeenCalled()
+  expect(testBrowserPush).not.toHaveBeenCalled()
+  expect(setBrowserPushPreview).not.toHaveBeenCalled()
+  expect(setNativeNotifyEnabled).not.toHaveBeenCalled()
+  expect(setNativeNotifyKind).not.toHaveBeenCalled()
+  expect(writeProfileDefault).not.toHaveBeenCalled()
+})
+
+it('repairs only on explicit action and reveals preview on confirmed activation', async () => {
+  vi.mocked(browserPushStatus).mockResolvedValueOnce({ ...inactive, needsRepair: true })
+    .mockResolvedValueOnce({ ...inactive, active: true, preview: false })
+  renderAlerts()
+  const repair = await screen.findByRole('button', { name: 'Repair' })
+  expect(screen.getByText('Reconnect background notifications on this device.')).toBeTruthy()
+  expect(screen.queryByRole('switch', { name: 'Show message previews' })).toBeNull()
+  expect(enableBrowserPush).not.toHaveBeenCalled()
+  await act(async () => { fireEvent.click(repair) })
+  expect(enableBrowserPush).toHaveBeenCalledOnce()
+  expect(enableBrowserPush).toHaveBeenCalledWith(null, 'public')
+  expect(screen.getByRole('switch', { name: 'Show message previews' }).getAttribute('aria-checked')).toBe('false')
+  expect(testButton().disabled).toBe(false)
+})
+
+it('prevents a delayed retry from an earlier push profile replacing the current status', async () => {
+  let resolveRetry!: (status: Awaited<ReturnType<typeof browserPushStatus>>) => void
+  vi.mocked(browserPushStatus).mockRejectedValueOnce(new Error('offline'))
+    .mockReturnValueOnce(new Promise(resolve => { resolveRetry = resolve }))
+    .mockResolvedValue({ ...inactive, needsRepair: true })
+  renderAlerts()
+  fireEvent.click(await screen.findByRole('button', { name: 'Retry status' }))
+  await act(async () => {
+    $connection.set({
+      baseUrl: 'https://hermes.invalid', isFullscreen: false, logs: [], mode: 'local',
+      nativeOverlayWidth: 0, profile: 'beta', token: '', windowButtonPosition: null,
+      wsUrl: 'wss://hermes.invalid/ws'
+    })
+  })
+  expect(browserPushStatus).toHaveBeenLastCalledWith('beta')
+  expect(screen.getByRole('button', { name: 'Repair' })).toBeTruthy()
+  await act(async () => resolveRetry({ ...inactive, active: true, preview: true }))
+  expect(screen.getByRole('button', { name: 'Repair' })).toBeTruthy()
+  expect(screen.queryByRole('switch', { name: 'Show message previews' })).toBeNull()
+})
+
+it.each(['denied', 'default'] as const)('explains missing setup permission (%s) without enrolling', async permission => {
+  FakeNotification.answer = permission
+  vi.mocked(browserPushStatus).mockResolvedValue(inactive)
+  renderAlerts()
+  const setup = await screen.findByRole('button', { name: 'Set up on this device' })
+  await act(async () => { fireEvent.click(setup) })
+  expect(notify).toHaveBeenLastCalledWith({
+    kind: 'error',
+    message: expect.stringMatching(permission === 'denied' ? /blocked in this browser/i : /until you allow/i)
+  })
+  expect(enableBrowserPush).not.toHaveBeenCalled()
+  expect(setBrowserPushPreview).not.toHaveBeenCalled()
+})
+
+it.each(['remote', 'native'] as const)('keeps the %s test on its existing fallback and honors the device master', async surface => {
+  hostHas.mockImplementation(name => surface === 'remote' && name === 'browserNotifications')
+  $connection.set({
+    baseUrl: 'https://hermes.invalid', connectionId: 'remote', isFullscreen: false, logs: [], mode: 'remote',
+    nativeOverlayWidth: 0, token: '', windowButtonPosition: null, wsUrl: 'wss://hermes.invalid/ws'
+  })
+  renderAlerts()
+  await sendTest()
+  expect(sendTestNativeNotification).toHaveBeenCalledOnce()
+  expect(FakeNotification.requestPermission).toHaveBeenCalledTimes(surface === 'remote' ? 1 : 0)
+  expect(browserPushStatus).not.toHaveBeenCalled()
+  expect(testBrowserPush).not.toHaveBeenCalled()
+  expect(readProfileDefault).not.toHaveBeenCalled()
+  await act(async () => { $nativeNotifyPrefs.set({ ...$nativeNotifyPrefs.get(), enabled: false }) })
+  expect(testButton().disabled).toBe(true)
+  expect(screen.getByText('Turn on notifications on this device first.')).toBeTruthy()
+})
+
+function LocaleProbe() {
+  const { locale, t } = useI18n()
+
+  return <output>{locale} / {t.settings.notifications.completionSoundPreview}</output>
+}
+
+it.each([
+  ['pl', 'pl', 'To urządzenie', 'Domyślne dla rozmów'],
+  ['en', 'en', 'This device', 'Conversation defaults'],
+  [undefined, 'en', 'This device', 'Conversation defaults']
+] as const)('resolves notification copy from the saved language (%s) without changing preferences', async (saved, locale, device, conversations) => {
+  readProfileDefault.mockResolvedValue({ enabled: false, revision: 1 })
+
+  const configClient = {
+    getConfig: vi.fn(async () => ({ display: { language: saved } })),
+    saveConfig: vi.fn()
+  }
+
+  const machine = { getMachineProfile: vi.fn(async () => ({ locale: 'pl-PL' })) }
+  vi.stubGlobal('hermesDesktop', machine)
+  render(
+    <MemoryRouter>
+      <I18nProvider configClient={configClient}>
+        <LocaleProbe />
+        <NotificationsSettings subpage="alerts" />
+      </I18nProvider>
+    </MemoryRouter>
+  )
+  expect(await screen.findByText(`${locale} / Preview`)).toBeTruthy()
+  const deviceGroup = await screen.findByRole('region', { name: device })
+  const profileGroup = await screen.findByRole('region', { name: conversations })
+  expect(within(deviceGroup).getByRole('switch', { name: locale === 'pl' ? 'Włącz powiadomienia' : 'Enable notifications' })).toBeTruthy()
+  expect(within(profileGroup).getByText(locale === 'pl' ? /nowych i istniejących rozmów.*w tym profilu/i : /new and existing conversations.*in this profile/i)).toBeTruthy()
+  expect(machine.getMachineProfile).toHaveBeenCalledTimes(saved === undefined ? 1 : 0)
+  expect(configClient.saveConfig).not.toHaveBeenCalled()
+  expect(setNativeNotifyEnabled).not.toHaveBeenCalled()
+  expect(setNativeNotifyKind).not.toHaveBeenCalled()
+  expect(writeProfileDefault).not.toHaveBeenCalled()
+  expect(enableBrowserPush).not.toHaveBeenCalled()
 })

@@ -1,6 +1,6 @@
 import { LOCAL_CONNECTION_ID } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
-import { type ReactNode, useEffect, useRef, useState } from 'react'
+import { type ReactNode, useCallback, useEffect, useId, useRef, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
@@ -38,8 +38,8 @@ import { useSettingDeepLink } from './use-setting-deep-link'
 
 const CAPTION = 'text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)'
 
-function Caption({ children, className }: { children: ReactNode; className?: string }) {
-  return <p className={cn(CAPTION, className)}>{children}</p>
+function Caption({ children, className, id }: { children: ReactNode; className?: string; id?: string }) {
+  return <p className={cn(CAPTION, className)} id={id}>{children}</p>
 }
 
 async function askPermissionFromSettings(failureMessage: string) {
@@ -83,6 +83,12 @@ function BrowserPermissionRow() {
   )
 }
 
+interface PushReadState {
+  failed?: boolean
+  scope: null | string
+  status?: WebPushStatus
+}
+
 interface NotificationsSettingsProps {
   subpage?: string
 }
@@ -93,7 +99,10 @@ export function NotificationsSettings({ subpage }: NotificationsSettingsProps = 
   const muted = useStore($hapticsMuted)
   const completionSoundVariantId = useStore($completionSoundVariantId)
   const copy = t.settings.notifications
-  const pushCopy = copy.webPush ?? enNotifications.webPush
+  const pushCopy = { ...enNotifications.webPush, ...copy.webPush }
+  const testCopy = copy.testStatus ?? enNotifications.testStatus
+  const deviceTitle = copy.device ?? enNotifications.device
+  const testHintId = useId()
   const browser = hostHas('browserNotifications')
   const connection = useStore($connection)
   const localBrowser = browser && (!connection?.connectionId || connection.connectionId === LOCAL_CONNECTION_ID)
@@ -101,15 +110,51 @@ export function NotificationsSettings({ subpage }: NotificationsSettingsProps = 
   const activeProfile = useStore($activeGatewayProfile)
   const defaultProfile = normalizeProfileKey(profile ?? activeProfile)
   const pushScope = localBrowser ? profile ?? '' : null
-  const [pushState, setPushState] = useState<{ scope: null | string; status?: WebPushStatus; failed?: boolean }>({ scope: null })
+  const [pushState, setPushState] = useState<PushReadState>({ scope: null })
   const [pushBusy, setPushBusy] = useState(false)
   const pushReads = useRef({ version: 0 })
   const pushStatus = pushState.scope === pushScope ? pushState.status : undefined
   const pushError = pushState.scope === pushScope && pushState.failed
+
+  const testPushBlocker = (status: WebPushStatus) => {
+    if (!status.available) { return undefined }
+
+    if (status.needsRepair) { return testCopy.needsRepair }
+
+    return status.active ? undefined : testCopy.needsSetup
+  }
+
+  let testBlocker: string | undefined
+
+  if (!prefs.enabled) {
+    testBlocker = testCopy.masterOff
+  } else if (pushBusy) {
+    testBlocker = testCopy.busy
+  } else if (localBrowser) {
+    testBlocker = pushError ? testCopy.statusFailed : pushStatus ? testPushBlocker(pushStatus) : testCopy.checking
+  }
+
+  const setupBlockedByKind = !pushStatus?.conversationPolicy && !prefs.kinds.turnDone && !pushStatus?.active
   const showAlerts = subpage === undefined || subpage === 'alerts'
   const showSounds = subpage === undefined || subpage === 'sounds'
 
   useSettingDeepLink('notifications', page => subpage === undefined || page === subpage)
+
+  const refreshPushStatus = useCallback(async () => {
+    const reads = pushReads.current
+    const version = ++reads.version
+
+    const next = await browserPushStatus(profile).then<PushReadState, PushReadState>(
+      status => ({ scope: pushScope, status }),
+      () => ({ failed: true, scope: pushScope })
+    )
+
+    if (reads !== pushReads.current || version !== reads.version) { return undefined }
+
+    setPushState(next)
+
+    return next
+  }, [profile, pushScope])
 
   // eslint-disable-next-line no-restricted-syntax -- This effect owns a request token for the mounted profile.
   useEffect(() => {
@@ -117,27 +162,16 @@ export function NotificationsSettings({ subpage }: NotificationsSettingsProps = 
       return
     }
 
-    let current = true
-    const reads = { version: 0 }
-    pushReads.current = reads
-
-    const refresh = () => {
-      const version = ++reads.version
-
-      void browserPushStatus(profile).then(
-        status => { if (current && version === reads.version) { setPushState({ scope: pushScope, status }) } },
-        () => { if (current && version === reads.version) { setPushState({ failed: true, scope: pushScope }) } }
-      )
-    }
+    const refresh = () => { void refreshPushStatus() }
 
     refresh()
     window.addEventListener('focus', refresh)
 
     return () => {
-      current = false
+      pushReads.current = { version: 0 }
       window.removeEventListener('focus', refresh)
     }
-  }, [localBrowser, profile, pushScope, showAlerts])
+  }, [localBrowser, refreshPushStatus, showAlerts])
 
   const changeResponsePreference = async (on: boolean, master: boolean) => {
     if (!on && (localBrowser || (master && browser))) {
@@ -196,6 +230,8 @@ export function NotificationsSettings({ subpage }: NotificationsSettingsProps = 
       const permission = await askPermissionFromSettings(copy.browserPermission.requestFailed)
 
       if (permission !== 'granted') {
+        if (permission) { notify({ kind: 'error', message: copy.browserPermission.states[permission] }) }
+
         return
       }
 
@@ -241,45 +277,37 @@ export function NotificationsSettings({ subpage }: NotificationsSettingsProps = 
   }
 
   const runTest = async () => {
+    if (testBlocker) { return }
+
     triggerHaptic('open')
 
-    if (localBrowser) {
+    if (localBrowser && pushStatus?.available) {
       const reads = pushReads.current
 
       try {
-        const status = pushStatus ?? await browserPushStatus(profile)
+        const result = await testBrowserPush(profile)
 
-        if (status.available) {
-          if (!status.active || status.needsRepair) {
-            throw new Error('Web Push test unavailable')
-          }
+        if (reads !== pushReads.current) { return }
 
-          const result = await testBrowserPush(profile)
-
-          if (result === 'inactive') {
-            throw new Error('Web Push subscription inactive')
-          }
-
-          notify({ kind: 'info', message: result === 'recent' ? pushCopy.recent : pushCopy.queued })
-
-          return
+        if (result === 'inactive') {
+          throw new Error('Web Push subscription inactive')
         }
+
+        notify({ kind: 'info', message: result === 'recent' ? pushCopy.recent : pushCopy.queued })
       } catch {
-        if (reads !== pushReads.current) {
-          return
+        if (reads !== pushReads.current) { return }
+
+        const next = await refreshPushStatus()
+
+        if (next) {
+          notify({
+            kind: 'error',
+            message: next.status ? testPushBlocker(next.status) ?? copy.testFailed : testCopy.statusFailed
+          })
         }
-
-        const version = ++reads.version
-        const status = await browserPushStatus(profile).catch(() => undefined)
-
-        if (reads === pushReads.current && version === reads.version) {
-          setPushState({ failed: !status, scope: pushScope, status })
-        }
-
-        notify({ kind: 'error', message: copy.testFailed })
-
-        return
       }
+
+      return
     }
 
     if (browser) {
@@ -332,61 +360,88 @@ export function NotificationsSettings({ subpage }: NotificationsSettingsProps = 
           {subpage === undefined && <SectionHeading icon={Bell} title={copy.title} />}
           <Caption className="mb-2 leading-(--conversation-caption-line-height)">{copy.intro}</Caption>
 
-          <ToggleRow
-            checked={prefs.enabled}
-            description={copy.enableAllDesc}
-            disabled={pushBusy}
-            id={settingElementId(SETTING_IDS.notifications.enableAll)}
-            label={copy.enableAll}
-            onChange={on => void changeResponsePreference(on, true)}
-          />
+          <section aria-label={deviceTitle}>
+            <h3 className="mb-1 pt-2 text-sm font-medium">{deviceTitle}</h3>
+            <ToggleRow
+              checked={prefs.enabled}
+              description={copy.enableAllDesc}
+              disabled={pushBusy}
+              id={settingElementId(SETTING_IDS.notifications.enableAll)}
+              label={copy.enableAll}
+              onChange={on => void changeResponsePreference(on, true)}
+            />
 
-          {browser && <BrowserPermissionRow />}
+            {browser && <BrowserPermissionRow />}
+
+            {localBrowser && pushError && (
+              <ListRow
+                action={
+                  <Button disabled={pushBusy} onClick={() => void refreshPushStatus()} size="sm" type="button" variant="outline">
+                    {pushCopy.retry}
+                  </Button>
+                }
+                description={pushCopy.unavailable}
+                title={pushCopy.title}
+              />
+            )}
+
+            {localBrowser && pushStatus?.available && (
+              <ListRow
+                action={(!pushStatus.active || pushStatus.needsRepair) && (
+                  <Button disabled={pushBusy || !prefs.enabled || setupBlockedByKind}
+                    onClick={() => void setupPush()} size="sm" type="button" variant="outline">
+                    {pushStatus.needsRepair ? pushCopy.repair : pushCopy.enable}
+                  </Button>
+                )}
+                description={
+                  !prefs.enabled ? testCopy.masterOff :
+                    setupBlockedByKind ? pushCopy.turnDoneOff :
+                      pushStatus.needsRepair ? pushCopy.needsRepair :
+                        pushStatus.active ? pushCopy.active : pushCopy.setup
+                }
+                title={pushCopy.title}
+              />
+            )}
+
+            {pushStatus?.active && typeof pushStatus.preview === 'boolean' && (
+              <ToggleRow
+                checked={pushStatus.preview}
+                description={copy.webPushPreview.description}
+                disabled={pushBusy}
+                label={copy.webPushPreview.label}
+                onChange={preview => void changePreview(preview)}
+              />
+            )}
+
+            {NATIVE_NOTIFICATION_KINDS.filter(kind => kind !== 'turnDone' || !pushStatus?.conversationPolicy).map(kind => (
+              <ToggleRow
+                checked={prefs.enabled && (prefs.kinds[kind] || (kind === 'turnDone' && pushStatus?.active === true))}
+                description={copy.kinds[kind].description}
+                disabled={!prefs.enabled || (kind === 'turnDone' && pushBusy)}
+                id={settingElementId(notificationKindSettingId(kind))}
+                key={kind}
+                label={copy.kinds[kind].label}
+                onChange={on => {
+                  if (kind === 'turnDone') {
+                    void changeResponsePreference(on, false)
+                  } else {
+                    setNativeNotifyKind(kind, on)
+                  }
+                }}
+              />
+            ))}
+
+            <div className="mt-4 flex flex-col gap-2">
+              <Button aria-describedby={testBlocker || !pushStatus?.active ? testHintId : undefined} className="self-start" disabled={Boolean(testBlocker)}
+                onClick={() => void runTest()} size="sm" type="button" variant="outline">
+                <Bell />
+                {copy.test}
+              </Button>
+              {(testBlocker || !pushStatus?.active) && <Caption id={testHintId}>{testBlocker ?? copy.focusedHint}</Caption>}
+            </div>
+          </section>
 
           {localBrowser && <ResponseReadyProfileDefaultRow key={defaultProfile} profile={defaultProfile} />}
-
-          {localBrowser && (pushStatus?.available || pushError) && (
-            <ListRow
-              action={(!pushStatus?.active || pushStatus.needsRepair) && (
-                <Button disabled={pushBusy || !prefs.enabled ||
-                    (!pushStatus?.conversationPolicy && !prefs.kinds.turnDone && !pushStatus?.active)}
-                  onClick={() => void setupPush()} size="sm" type="button" variant="outline">
-                  {pushStatus?.needsRepair || pushError ? pushCopy.repair : pushCopy.enable}
-                </Button>
-              )}
-              description={pushError ? pushCopy.unavailable :
-                pushStatus?.active && !pushStatus.needsRepair ? pushCopy.active : pushCopy.setup}
-              title={pushCopy.title}
-            />
-          )}
-
-          {pushStatus?.active && typeof pushStatus.preview === 'boolean' && (
-            <ToggleRow
-              checked={pushStatus.preview}
-              description={copy.webPushPreview.description}
-              disabled={pushBusy}
-              label={copy.webPushPreview.label}
-              onChange={preview => void changePreview(preview)}
-            />
-          )}
-
-          {NATIVE_NOTIFICATION_KINDS.filter(kind => kind !== 'turnDone' || !pushStatus?.conversationPolicy).map(kind => (
-            <ToggleRow
-              checked={prefs.enabled && (prefs.kinds[kind] || (kind === 'turnDone' && pushStatus?.active === true))}
-              description={copy.kinds[kind].description}
-              disabled={!prefs.enabled || (kind === 'turnDone' && pushBusy)}
-              id={settingElementId(notificationKindSettingId(kind))}
-              key={kind}
-              label={copy.kinds[kind].label}
-              onChange={on => {
-                if (kind === 'turnDone') {
-                  void changeResponsePreference(on, false)
-                } else {
-                  setNativeNotifyKind(kind, on)
-                }
-              }}
-            />
-          ))}
         </>
       )}
 
@@ -445,16 +500,6 @@ export function NotificationsSettings({ subpage }: NotificationsSettingsProps = 
             title={copy.completionSoundTitle}
           />
         </>
-      )}
-
-      {showAlerts && (
-        <div className="mt-4 flex flex-col gap-2">
-          <Button className="self-start" onClick={() => void runTest()} size="sm" type="button" variant="outline">
-            <Bell />
-            {copy.test}
-          </Button>
-          <Caption>{pushStatus?.active && !pushStatus.needsRepair ? pushCopy.active : copy.focusedHint}</Caption>
-        </div>
       )}
     </SettingsContent>
   )
