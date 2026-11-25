@@ -262,7 +262,7 @@ it('allows device enrollment when the legacy response-ready preference is off', 
   }
 })
 
-it('shows only server-confirmed preview consent and preserves it on a failed update', async () => {
+it('shows only server-confirmed preview consent and reads it again on an unconfirmed update', async () => {
   vi.mocked(browserPushStatus).mockResolvedValue({ active: true, available: true, preview: false })
   let confirm!: (value: boolean) => void
   vi.mocked(setBrowserPushPreview).mockReturnValueOnce(new Promise(resolve => { confirm = resolve }))
@@ -274,10 +274,11 @@ it('shows only server-confirmed preview consent and preserves it on a failed upd
   expect(privacy.getAttribute('aria-checked')).toBe('false')
   await act(async () => confirm(true))
   expect(privacy.getAttribute('aria-checked')).toBe('true')
+  vi.mocked(browserPushStatus).mockResolvedValue({ active: true, available: true, preview: true })
   vi.mocked(setBrowserPushPreview).mockRejectedValueOnce(new Error('unavailable'))
   await act(async () => { fireEvent.click(privacy) })
-  expect(privacy.getAttribute('aria-checked')).toBe('true')
-  expect(notify).toHaveBeenLastCalledWith({ kind: 'error', message: expect.stringMatching(/could not be saved/i) })
+  expect(screen.getByRole('switch', { name: 'Show message previews' }).getAttribute('aria-checked')).toBe('true')
+  expect(notify).toHaveBeenLastCalledWith({ kind: 'error', message: 'Could not confirm the message preview setting.' })
 })
 
 it('shows the named profile default with neither device enrollment nor master enabled', async () => {
@@ -377,7 +378,7 @@ it.each([false, true])('retries only the status read with master enabled %s', as
   await act(async () => { fireEvent.click(retry) })
   expect(screen.getByRole('button', { name: 'Retry status' })).toBeTruthy()
   await act(async () => { fireEvent.click(retry) })
-  expect(vi.mocked(browserPushStatus).mock.calls).toEqual([[null], [null], [null]])
+  expect(vi.mocked(browserPushStatus).mock.calls).toEqual([[null], [null, { observeOnly: true }], [null, { observeOnly: true }]])
   expect(screen.queryByRole('button', { name: 'Retry status' })).toBeNull()
   expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Set up on this device' }).disabled).toBe(!enabled)
   expect(testButton().disabled).toBe(true)
@@ -498,4 +499,20 @@ it.each([
   expect(setNativeNotifyKind).not.toHaveBeenCalled()
   expect(writeProfileDefault).not.toHaveBeenCalled()
   expect(enableBrowserPush).not.toHaveBeenCalled()
+})
+
+it('reports an unconfirmed profile default after an accepted write and failed readback', async () => {
+  readProfileDefault.mockResolvedValueOnce({ enabled: false, revision: 1 })
+    .mockRejectedValueOnce(new Error('offline'))
+    .mockResolvedValueOnce({ enabled: true, revision: 2 })
+  writeProfileDefault.mockResolvedValueOnce(undefined)
+  renderAlerts()
+  const name = 'Response ready default (default)'
+  const row = await screen.findByRole('switch', { name })
+  await act(async () => { fireEvent.click(row) })
+  expect(notify).toHaveBeenLastCalledWith({ kind: 'error', message: 'Could not confirm the profile default after saving.' })
+  expect(screen.queryByRole('switch', { name })).toBeNull()
+  await act(async () => { fireEvent.focus(window) })
+  expect(screen.getByRole('switch', { name }).getAttribute('aria-checked')).toBe('true')
+  expect(writeProfileDefault).toHaveBeenCalledOnce()
 })

@@ -28,7 +28,7 @@ import { isBundledLocale, TRANSLATIONS } from './catalog'
 import type { Locale, Translations } from './types'
 
 /** Who registered a language: the backend's pack layer, a plugin, or app code. */
-export type AppLocaleSource = 'app' | 'backend' | `plugin:${string}`
+export type AppLocaleSource = 'app' | 'app:notifications' | 'backend' | `plugin:${string}`
 
 export interface AppLocaleRegistration {
   /** Native name shown in the switcher (`Polski`). Falls back to the shared

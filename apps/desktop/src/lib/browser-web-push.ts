@@ -61,9 +61,9 @@ export async function writeProfileDefault(profile: string, enabled: boolean, exp
   })
 }
 
-function request<T>(profile?: null | string, action?: string, body?: unknown) {
+function request<T>(profile?: null | string, action?: string, body?: unknown, createInstallation = true) {
   const bootstrap = browserBootstrap()
-  const installation = bootstrap?.authRequired && pushInstallation(bootstrap.basePath)
+  const installation = bootstrap?.authRequired && pushInstallation(bootstrap.basePath, createInstallation)
 
   if (!bootstrap || !installation) {
     return undefined
@@ -78,11 +78,13 @@ function request<T>(profile?: null | string, action?: string, body?: unknown) {
   }, { [PUSH_INSTALLATION_HEADER]: installation })
 }
 
-export async function browserPushStatus(profile?: null | string): Promise<WebPushStatus> {
+export async function browserPushStatus(
+  profile?: null | string, { observeOnly = false }: { observeOnly?: boolean } = {}
+): Promise<WebPushStatus> {
   let status: WebPushStatus
 
   try {
-    status = await request<WebPushStatus>(profile) ?? unavailable
+    status = await request<WebPushStatus>(profile, undefined, undefined, !observeOnly) ?? unavailable
   } catch (error) {
     if (error instanceof Error && error.message.startsWith('404:')) {
       return { ...unavailable, legacyBackend: true }
@@ -106,10 +108,10 @@ export async function browserPushStatus(profile?: null | string): Promise<WebPus
     return { ...status, active: false, needsRepair: true }
   }
 
-  const check = await request<{ active: boolean }>(profile, 'check', subscription.toJSON())
+  const check = await request<{ active: boolean }>(profile, 'check', subscription.toJSON(), !observeOnly)
   const active = check?.active === true
 
-  if (active) { void refreshExistingBrowserPushWorker() }
+  if (active && !observeOnly) { void refreshExistingBrowserPushWorker() }
 
   return { ...status, active, needsRepair: !active }
 }

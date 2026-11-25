@@ -12,11 +12,13 @@ export const enNotifications = {
     inheritOn: 'Default (on)',
     on: 'On',
     off: 'Off',
+    unconfirmed: 'Could not confirm the conversation setting after saving.',
     failed: 'The conversation notification setting could not be saved. Try again.'
   },
   webPushProfileDefault: {
     label: 'Response ready default ({profile})',
     description: 'Applies across devices to new and existing conversations set to Default in this profile.',
+    unconfirmed: 'Could not confirm the profile default after saving.',
     failed: 'The profile default could not be saved.',
     unavailable: 'The profile default could not be read.'
   },
@@ -78,6 +80,9 @@ export const enNotifications = {
     turnDoneOff: 'Turn on Response ready below to set up background notifications.',
     retry: 'Retry status',
     unavailable: 'Could not read background notification status.',
+    setupUnconfirmed: 'Could not confirm background notification setup. Check the status before trying again.',
+    previewUnconfirmed: 'Could not confirm the message preview setting.',
+    unsupported: 'Background notifications are unavailable on this device.',
     failed: 'Web Push settings could not be saved. Try again.',
     queued: 'Push test queued. If nothing appears, check system notification permissions and Focus/Do Not Disturb.',
     recent: 'A Push test finished recently. Wait a moment before sending another.',

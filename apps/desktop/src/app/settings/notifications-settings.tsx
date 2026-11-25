@@ -85,7 +85,7 @@ function BrowserPermissionRow() {
 
 interface PushReadState {
   failed?: boolean
-  scope: null | string
+  retryResult?: boolean
   status?: WebPushStatus
 }
 
@@ -94,6 +94,23 @@ interface NotificationsSettingsProps {
 }
 
 export function NotificationsSettings({ subpage }: NotificationsSettingsProps = {}) {
+  const browser = hostHas('browserNotifications')
+  const connection = useStore($connection)
+  const localBrowser = browser && (!connection?.connectionId || connection.connectionId === LOCAL_CONNECTION_ID)
+  const profile = connection?.profile ?? null
+  const showAlerts = subpage === undefined || subpage === 'alerts'
+
+  // A returning profile starts a fresh read even if the intervening profile never finished loading.
+  const scope = localBrowser && showAlerts ? `push:${profile ?? ''}` : 'fallback'
+
+  return <ScopedNotificationsSettings browser={browser} key={scope} localBrowser={localBrowser} profile={profile} subpage={subpage} />
+}
+
+function ScopedNotificationsSettings({ browser, localBrowser, profile, subpage }: NotificationsSettingsProps & {
+  browser: boolean
+  localBrowser: boolean
+  profile: null | string
+}) {
   const { t } = useI18n()
   const prefs = useStore($nativeNotifyPrefs)
   const muted = useStore($hapticsMuted)
@@ -103,18 +120,13 @@ export function NotificationsSettings({ subpage }: NotificationsSettingsProps = 
   const testCopy = copy.testStatus ?? enNotifications.testStatus
   const deviceTitle = copy.device ?? enNotifications.device
   const testHintId = useId()
-  const browser = hostHas('browserNotifications')
-  const connection = useStore($connection)
-  const localBrowser = browser && (!connection?.connectionId || connection.connectionId === LOCAL_CONNECTION_ID)
-  const profile = connection?.profile ?? null
   const activeProfile = useStore($activeGatewayProfile)
   const defaultProfile = normalizeProfileKey(profile ?? activeProfile)
-  const pushScope = localBrowser ? profile ?? '' : null
-  const [pushState, setPushState] = useState<PushReadState>({ scope: null })
+  const [pushState, setPushState] = useState<PushReadState>({})
   const [pushBusy, setPushBusy] = useState(false)
-  const pushReads = useRef({ version: 0 })
-  const pushStatus = pushState.scope === pushScope ? pushState.status : undefined
-  const pushError = pushState.scope === pushScope && pushState.failed
+  const pushReads = useRef({ version: 0, writing: false })
+  const pushStatusText = useRef<HTMLSpanElement>(null)
+  const { status: pushStatus, failed: pushError } = pushState
 
   const testPushBlocker = (status: WebPushStatus) => {
     if (!status.available) { return undefined }
@@ -135,26 +147,51 @@ export function NotificationsSettings({ subpage }: NotificationsSettingsProps = 
   }
 
   const setupBlockedByKind = !pushStatus?.conversationPolicy && !prefs.kinds.turnDone && !pushStatus?.active
+  let pushDescription = pushCopy.unsupported
+
+  if (pushError) {
+    pushDescription = pushCopy.unavailable
+  } else if (pushStatus?.available) {
+    if (!prefs.enabled) {
+      pushDescription = testCopy.masterOff
+    } else if (setupBlockedByKind) {
+      pushDescription = pushCopy.turnDoneOff
+    } else if (pushStatus.needsRepair) {
+      pushDescription = pushCopy.needsRepair
+    } else {
+      pushDescription = pushStatus.active ? pushCopy.active : pushCopy.setup
+    }
+  }
+
   const showAlerts = subpage === undefined || subpage === 'alerts'
   const showSounds = subpage === undefined || subpage === 'sounds'
 
   useSettingDeepLink('notifications', page => subpage === undefined || page === subpage)
 
-  const refreshPushStatus = useCallback(async () => {
+  const refreshPushStatus = useCallback(async (options?: { observeOnly?: boolean; retryButton?: HTMLButtonElement }) => {
     const reads = pushReads.current
     const version = ++reads.version
+    const observeOnly = options?.observeOnly === true
+    const retryButton = options?.retryButton
+    const response = observeOnly ? browserPushStatus(profile, { observeOnly }) : browserPushStatus(profile)
 
-    const next = await browserPushStatus(profile).then<PushReadState, PushReadState>(
-      status => ({ scope: pushScope, status }),
-      () => ({ failed: true, scope: pushScope })
+    const next = await response.then<PushReadState, PushReadState>(
+      status => ({ status, retryResult: retryButton !== undefined }),
+      () => ({ failed: true })
     )
 
     if (reads !== pushReads.current || version !== reads.version) { return undefined }
 
-    setPushState(next)
+    if (next.status && retryButton && document.activeElement === retryButton) {
+      pushStatusText.current?.focus()
+    }
+
+    setPushState(previous => previous.retryResult && next.status?.available === false
+      ? { ...next, retryResult: true }
+      : next)
 
     return next
-  }, [profile, pushScope])
+  }, [profile])
 
   // eslint-disable-next-line no-restricted-syntax -- This effect owns a request token for the mounted profile.
   useEffect(() => {
@@ -162,13 +199,15 @@ export function NotificationsSettings({ subpage }: NotificationsSettingsProps = 
       return
     }
 
-    const refresh = () => { void refreshPushStatus() }
+    const refresh = () => {
+      if (!pushReads.current.writing) { void refreshPushStatus() }
+    }
 
     refresh()
     window.addEventListener('focus', refresh)
 
     return () => {
-      pushReads.current = { version: 0 }
+      pushReads.current = { version: 0, writing: false }
       window.removeEventListener('focus', refresh)
     }
   }, [localBrowser, refreshPushStatus, showAlerts])
@@ -177,6 +216,7 @@ export function NotificationsSettings({ subpage }: NotificationsSettingsProps = 
     if (!on && (localBrowser || (master && browser))) {
       const reads = pushReads.current
       reads.version++
+      reads.writing = true
       setPushBusy(true)
 
       try {
@@ -185,9 +225,9 @@ export function NotificationsSettings({ subpage }: NotificationsSettingsProps = 
 
         if (reads === pushReads.current) {
           setPushState(previous => {
-            const current = (previous.scope === pushScope ? previous.status : undefined) ?? status
+            const current = previous.status ?? status
 
-            return current ? { scope: pushScope, status: { ...current, active: false, needsRepair: false } } : previous
+            return current ? { status: { ...current, active: false, needsRepair: false } } : previous
           })
         }
       } catch (error) {
@@ -200,7 +240,7 @@ export function NotificationsSettings({ subpage }: NotificationsSettingsProps = 
           const pending = error instanceof Error && (error.message.startsWith('503:') || error.name === 'AbortError')
 
           if (pending && reads === pushReads.current) {
-            setPushState({ failed: true, scope: pushScope })
+            setPushState({ failed: true })
           }
 
           notify({ kind: 'error', message: pending ? pushCopy.revocationPending : pushCopy.failed })
@@ -208,8 +248,8 @@ export function NotificationsSettings({ subpage }: NotificationsSettingsProps = 
           return
         }
       } finally {
-        // A focus read can start while the server is still processing the opt-out.
         reads.version++
+        reads.writing = false
         setPushBusy(false)
       }
     }
@@ -224,6 +264,7 @@ export function NotificationsSettings({ subpage }: NotificationsSettingsProps = 
   const setupPush = async () => {
     const reads = pushReads.current
     reads.version++
+    reads.writing = true
     setPushBusy(true)
 
     try {
@@ -242,15 +283,19 @@ export function NotificationsSettings({ subpage }: NotificationsSettingsProps = 
       }
 
       await enableBrowserPush(profile, status.publicKey)
-      const enrolled = await browserPushStatus(profile)
 
-      if (reads === pushReads.current) {
-        setPushState({ scope: pushScope, status: enrolled })
+      if (reads !== pushReads.current) { return }
+
+      const enrolled = await refreshPushStatus()
+
+      if (enrolled && (!enrolled.status?.active || enrolled.status.needsRepair)) {
+        notify({ kind: 'error', message: pushCopy.setupUnconfirmed })
       }
     } catch {
-      notify({ kind: 'error', message: pushCopy.failed })
+      if (reads === pushReads.current) { notify({ kind: 'error', message: pushCopy.failed }) }
     } finally {
       reads.version++
+      reads.writing = false
       setPushBusy(false)
     }
   }
@@ -258,20 +303,28 @@ export function NotificationsSettings({ subpage }: NotificationsSettingsProps = 
   const changePreview = async (preview: boolean) => {
     const reads = pushReads.current
     reads.version++
+    reads.writing = true
     setPushBusy(true)
 
     try {
       const confirmed = await setBrowserPushPreview(profile, preview)
 
       if (reads === pushReads.current) {
-        setPushState(previous => previous.scope === pushScope && previous.status?.active
-          ? { scope: pushScope, status: { ...previous.status, preview: confirmed } }
+        setPushState(previous => previous.status?.active
+          ? { status: { ...previous.status, preview: confirmed } }
           : previous)
       }
     } catch {
-      notify({ kind: 'error', message: pushCopy.failed })
+      if (reads !== pushReads.current) { return }
+
+      setPushState(previous => previous.status
+        ? { status: { ...previous.status, preview: undefined } }
+        : previous)
+      notify({ kind: 'error', message: pushCopy.previewUnconfirmed })
+      await refreshPushStatus({ observeOnly: true })
     } finally {
       reads.version++
+      reads.writing = false
       setPushBusy(false)
     }
   }
@@ -373,31 +426,28 @@ export function NotificationsSettings({ subpage }: NotificationsSettingsProps = 
 
             {browser && <BrowserPermissionRow />}
 
-            {localBrowser && pushError && (
+            {localBrowser && (pushError || pushStatus?.available || pushState.retryResult) && (
               <ListRow
-                action={
-                  <Button disabled={pushBusy} onClick={() => void refreshPushStatus()} size="sm" type="button" variant="outline">
+                action={pushError ? (
+                  <Button
+                    disabled={pushBusy}
+                    onClick={event => void refreshPushStatus({ observeOnly: true, retryButton: event.currentTarget })}
+                    size="sm"
+                    type="button"
+                    variant="outline"
+                  >
                     {pushCopy.retry}
                   </Button>
-                }
-                description={pushCopy.unavailable}
-                title={pushCopy.title}
-              />
-            )}
-
-            {localBrowser && pushStatus?.available && (
-              <ListRow
-                action={(!pushStatus.active || pushStatus.needsRepair) && (
+                ) : pushStatus?.available && (!pushStatus.active || pushStatus.needsRepair) && (
                   <Button disabled={pushBusy || !prefs.enabled || setupBlockedByKind}
                     onClick={() => void setupPush()} size="sm" type="button" variant="outline">
                     {pushStatus.needsRepair ? pushCopy.repair : pushCopy.enable}
                   </Button>
                 )}
                 description={
-                  !prefs.enabled ? testCopy.masterOff :
-                    setupBlockedByKind ? pushCopy.turnDoneOff :
-                      pushStatus.needsRepair ? pushCopy.needsRepair :
-                        pushStatus.active ? pushCopy.active : pushCopy.setup
+                  <span ref={pushStatusText} role="status" tabIndex={-1}>
+                    {pushDescription}
+                  </span>
                 }
                 title={pushCopy.title}
               />

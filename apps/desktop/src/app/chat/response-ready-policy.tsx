@@ -3,6 +3,7 @@ import { useStore } from '@nanostores/react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { useI18n } from '@/i18n'
+import { enNotifications } from '@/i18n/en_notifications'
 import { hostHas } from '@/lib/host-capabilities'
 import { activeGateway } from '@/store/gateway'
 import { notify } from '@/store/notifications'
@@ -101,7 +102,9 @@ function SessionPolicyPicker({ request, sessionId }: PickerProps) {
       if (id === requestVersion.id) {
         setPolicy(confirmed)
 
-        if (!saved || confirmed?.mode !== mode) { notify({ kind: 'error', message: copy.failed }) }
+        if (!saved || confirmed?.mode !== mode) {
+          notify({ kind: 'error', message: saved ? copy.unconfirmed ?? enNotifications.webPushPolicy.unconfirmed : copy.failed })
+        }
       }
     }
 

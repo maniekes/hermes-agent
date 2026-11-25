@@ -64,7 +64,9 @@ export function ResponseReadyProfileDefaultRow({ profile }: { profile: string })
     requests.writing = false
     setBusy(false)
 
-    if (!saved || confirmed.value?.enabled !== enabled) { notify({ kind: 'error', message: copy.failed }) }
+    if (!saved || confirmed.value?.enabled !== enabled) {
+      notify({ kind: 'error', message: saved ? copy.unconfirmed ?? enNotifications.webPushProfileDefault.unconfirmed : copy.failed })
+    }
   }
 
   if (!state.failed && !state.value) { return null }

@@ -8,8 +8,8 @@ export interface NotificationSettingsTranslations {
   enableAllDesc: string
   focusedHint: string
   webPushPreview: { label: string; description: string }
-  webPushProfileDefault: { label: string; description: string; failed: string; unavailable: string }
-  webPushPolicy: { title: string; inherit: string; inheritOn: string; on: string; off: string; failed: string }
+  webPushProfileDefault: { label: string; description: string; failed: string; unconfirmed?: string; unavailable: string }
+  webPushPolicy: { title: string; inherit: string; inheritOn: string; on: string; off: string; failed: string; unconfirmed?: string }
   kinds: Record<
     'approval' | 'backgroundDone' | 'credits' | 'input' | 'plugin' | 'turnDone' | 'turnError',
     { label: string; description: string }
@@ -30,6 +30,9 @@ export interface NotificationSettingsTranslations {
     setup: string
     active: string
     unavailable: string
+    unsupported?: string
+    setupUnconfirmed?: string
+    previewUnconfirmed?: string
     failed: string
     queued: string
     recent: string

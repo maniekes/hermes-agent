@@ -166,3 +166,22 @@ it('shows Polish effective defaults and keeps inherit as the wire value', async 
   }))
   expect(picker.selectedOptions[0].textContent).toBe('Domyślne (wł.)')
 })
+
+it('reports missing confirmation after an accepted conversation write and failed readback', async () => {
+  const request = vi.fn()
+    .mockResolvedValueOnce({ response_ready_policy: { effective: 'off', mode: 'inherit', revision: 2 } })
+    .mockResolvedValueOnce({})
+    .mockRejectedValueOnce(new Error('offline'))
+    .mockResolvedValueOnce({ response_ready_policy: { effective: 'on', mode: 'on', revision: 3 } })
+
+  render(<ResponseReadyPolicyPicker request={request} sessionId="chat-a" />)
+  const picker = await screen.findByRole<HTMLSelectElement>('combobox')
+  await act(async () => { fireEvent.change(picker, { target: { value: 'on' } }) })
+  expect(screen.queryByRole('combobox')).toBeNull()
+  expect($notifications.get()).toEqual([expect.objectContaining({
+    kind: 'error', message: 'Could not confirm the conversation setting after saving.'
+  })])
+  await act(async () => { fireEvent.focus(window) })
+  expect(screen.getByRole<HTMLSelectElement>('combobox').value).toBe('on')
+  expect(request.mock.calls.filter(([method]) => method === 'session.mutate')).toHaveLength(1)
+})

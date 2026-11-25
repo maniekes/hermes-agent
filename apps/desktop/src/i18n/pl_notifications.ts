@@ -16,11 +16,13 @@ const notifications = {
     inheritOn: 'Domyślne (wł.)',
     on: 'Włączone',
     off: 'Wyłączone',
+    unconfirmed: 'Nie udało się potwierdzić ustawienia rozmowy po zapisie.',
     failed: 'Nie udało się zapisać ustawienia tej rozmowy. Spróbuj ponownie.'
   },
   webPushProfileDefault: {
     label: 'Domyślne powiadomienia o odpowiedzi ({profile})',
     description: 'Na wszystkich urządzeniach, dla nowych i istniejących rozmów z ustawieniem „Domyślne” w tym profilu.',
+    unconfirmed: 'Nie udało się potwierdzić domyślnego ustawienia po zapisie.',
     failed: 'Nie udało się zapisać domyślnego ustawienia. Spróbuj ponownie.',
     unavailable: 'Nie udało się odczytać domyślnego ustawienia.'
   },
@@ -60,6 +62,9 @@ const notifications = {
     setup: 'Skonfiguruj powiadomienia o odpowiedzi w tle dla tego profilu.',
     active: 'Powiadomienia w tle są aktywne dla tego profilu na tym urządzeniu.',
     unavailable: 'Nie udało się sprawdzić stanu powiadomień w tle.',
+    setupUnconfirmed: 'Nie udało się potwierdzić konfiguracji powiadomień w tle. Najpierw sprawdź ich stan.',
+    previewUnconfirmed: 'Nie udało się potwierdzić ustawienia podglądu treści.',
+    unsupported: 'Powiadomienia w tle są niedostępne na tym urządzeniu.',
     failed: 'Nie udało się zapisać ustawień powiadomień w tle. Spróbuj ponownie.',
     queued: 'Test dodano do kolejki. Jeśli powiadomienie się nie pojawi, sprawdź uprawnienia systemu i tryb „Nie przeszkadzać”.',
     recent: 'Test był już uruchomiony. Odczekaj chwilę przed kolejną próbą.',
@@ -84,4 +89,4 @@ registerAppLocale('pl', {
   endonym: 'Polski',
   englishName: 'Polish',
   translations: { settings: { nav: { notifications: notifications.title }, notifications } }
-})
+}, 'app:notifications')
