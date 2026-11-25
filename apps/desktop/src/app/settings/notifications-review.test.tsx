@@ -274,3 +274,78 @@ it('does not create an installation or send a request if the installation is mis
   expect(status.textContent).toBe('Background notifications are unavailable on this device.')
   expect(status.ownerDocument.activeElement).toBe(status)
 })
+
+it.each([false, true])('separates Retry from Setup when a focus read overtakes it (focus moves: %s)', async movesFocus => {
+  const pending = deferred<typeof inactive>()
+  let reads = 0
+  getSubscription.mockResolvedValue(null)
+  api.mockImplementation(async (_boot, req) => {
+    if (req.path.endsWith('profile-default')) {return undefined as never}
+
+    if (req.path !== statusPath) {throw new Error('unexpected request')}
+
+    if (++reads === 1) {throw new Error('initial read unavailable')}
+
+    if (reads === 2) {return pending.promise as never}
+
+    return inactive as never
+  })
+  view()
+  const retry = await screen.findByRole('button', { name: 'Retry status' })
+  const master = screen.getByRole('switch', { name: 'Enable notifications' })
+
+  retry.focus()
+  fireEvent.click(retry)
+  expect(reads).toBe(2)
+
+  if (movesFocus) { master.focus() }
+
+  await act(async () => { fireEvent.focus(window) })
+  expect(reads).toBe(3)
+  const setup = screen.getByRole('button', { name: 'Set up on this device' })
+  const status = screen.getByRole('status')
+
+  expect(setup).not.toBe(retry)
+  expect(status.textContent).toMatch(/Set up Web Push/)
+  expect(retry.ownerDocument.activeElement).toBe(movesFocus ? master : status)
+  await act(async () => pending.finish(inactive))
+  expect(retry.ownerDocument.activeElement).toBe(movesFocus ? master : status)
+
+  if (!movesFocus) {
+    await act(async () => { fireEvent.click(status.ownerDocument.activeElement!) })
+  }
+
+  expect(enableBrowserPush).not.toHaveBeenCalled()
+})
+
+it('offers a status check after accepted enrollment reads inactive before another setup can be started', async () => {
+  getSubscription.mockResolvedValue(null)
+  api.mockImplementation(async (_boot, req) => {
+    if (req.path.endsWith('profile-default')) {return undefined as never}
+
+    if (req.path === statusPath) {return inactive as never}
+
+    throw new Error('unexpected request')
+  })
+  view()
+  const setup = await screen.findByRole('button', { name: 'Set up on this device' })
+
+  await act(async () => { fireEvent.click(setup) })
+  expect(enableBrowserPush).toHaveBeenCalledOnce()
+  expect(notify).toHaveBeenCalledWith({
+    kind: 'error', message: 'Could not confirm background notification setup. Check the status before trying again.'
+  })
+  expect(screen.queryByRole('button', { name: 'Set up on this device' })).toBeNull()
+  const retry = screen.getByRole('button', { name: 'Retry status' })
+
+  await act(async () => { fireEvent.focus(window) })
+  expect(screen.getByRole('button', { name: 'Retry status' })).toBe(retry)
+  expect(screen.queryByRole('button', { name: 'Set up on this device' })).toBeNull()
+  retry.focus()
+  await act(async () => { fireEvent.click(retry) })
+
+  expect(screen.getByRole('button', { name: 'Set up on this device' })).not.toBe(retry)
+  expect(retry.ownerDocument.activeElement).toBe(screen.getByRole('status'))
+  expect(enableBrowserPush).toHaveBeenCalledOnce()
+  expect(api.mock.calls.filter(([, req]) => req.path === statusPath)).toHaveLength(4)
+})

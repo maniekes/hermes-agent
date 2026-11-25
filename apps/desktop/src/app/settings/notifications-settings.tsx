@@ -86,6 +86,7 @@ function BrowserPermissionRow() {
 interface PushReadState {
   failed?: boolean
   retryResult?: boolean
+  setupUnconfirmed?: boolean
   status?: WebPushStatus
 }
 
@@ -126,7 +127,17 @@ function ScopedNotificationsSettings({ browser, localBrowser, profile, subpage }
   const [pushBusy, setPushBusy] = useState(false)
   const pushReads = useRef({ version: 0, writing: false })
   const pushStatusText = useRef<HTMLSpanElement>(null)
-  const { status: pushStatus, failed: pushError } = pushState
+  const { status: pushStatus, failed: pushError, setupUnconfirmed } = pushState
+  const showStatusRetry = pushError || setupUnconfirmed
+
+  const handoffRetryFocus = useCallback((button: HTMLButtonElement | null) => {
+    if (!button) { return }
+
+    // The retry node can be removed by any status source, even while its own read is pending.
+    return () => {
+      if (button.ownerDocument.activeElement === button) { pushStatusText.current?.focus() }
+    }
+  }, [])
 
   const testPushBlocker = (status: WebPushStatus) => {
     if (!status.available) { return undefined }
@@ -143,7 +154,7 @@ function ScopedNotificationsSettings({ browser, localBrowser, profile, subpage }
   } else if (pushBusy) {
     testBlocker = testCopy.busy
   } else if (localBrowser) {
-    testBlocker = pushError ? testCopy.statusFailed : pushStatus ? testPushBlocker(pushStatus) : testCopy.checking
+    testBlocker = showStatusRetry ? testCopy.statusFailed : pushStatus ? testPushBlocker(pushStatus) : testCopy.checking
   }
 
   const setupBlockedByKind = !pushStatus?.conversationPolicy && !prefs.kinds.turnDone && !pushStatus?.active
@@ -151,6 +162,8 @@ function ScopedNotificationsSettings({ browser, localBrowser, profile, subpage }
 
   if (pushError) {
     pushDescription = pushCopy.unavailable
+  } else if (setupUnconfirmed) {
+    pushDescription = pushCopy.setupUnconfirmed
   } else if (pushStatus?.available) {
     if (!prefs.enabled) {
       pushDescription = testCopy.masterOff
@@ -168,27 +181,33 @@ function ScopedNotificationsSettings({ browser, localBrowser, profile, subpage }
 
   useSettingDeepLink('notifications', page => subpage === undefined || page === subpage)
 
-  const refreshPushStatus = useCallback(async (options?: { observeOnly?: boolean; retryButton?: HTMLButtonElement }) => {
+  const refreshPushStatus = useCallback(async (reason: 'refresh' | 'retry' | 'setup' | 'preview' = 'refresh') => {
     const reads = pushReads.current
     const version = ++reads.version
-    const observeOnly = options?.observeOnly === true
-    const retryButton = options?.retryButton
+    const observeOnly = reason === 'retry' || reason === 'preview'
     const response = observeOnly ? browserPushStatus(profile, { observeOnly }) : browserPushStatus(profile)
 
     const next = await response.then<PushReadState, PushReadState>(
-      status => ({ status, retryResult: retryButton !== undefined }),
+      status => ({ status }),
       () => ({ failed: true })
     )
 
     if (reads !== pushReads.current || version !== reads.version) { return undefined }
 
-    if (next.status && retryButton && document.activeElement === retryButton) {
-      pushStatusText.current?.focus()
-    }
+    setPushState(previous => {
+      const confirmed = next.status?.active && !next.status.needsRepair
 
-    setPushState(previous => previous.retryResult && next.status?.available === false
-      ? { ...next, retryResult: true }
-      : next)
+      // A passive refresh may confirm activation. Otherwise let the user check explicitly before offering another write.
+      const setupUnconfirmed = reason === 'setup'
+        ? Boolean(next.status) && !confirmed
+        : previous.setupUnconfirmed && !confirmed && (reason !== 'retry' || next.failed)
+
+      // Keep the live region mounted when a retry row resolves to an unavailable status.
+      const retryResult = reason === 'retry' || (next.status?.available === false &&
+        (previous.retryResult || previous.failed || previous.setupUnconfirmed))
+
+      return { ...next, setupUnconfirmed, retryResult }
+    })
 
     return next
   }, [profile])
@@ -227,7 +246,12 @@ function ScopedNotificationsSettings({ browser, localBrowser, profile, subpage }
           setPushState(previous => {
             const current = previous.status ?? status
 
-            return current ? { status: { ...current, active: false, needsRepair: false } } : previous
+            return current ? {
+              ...previous,
+              failed: false,
+              retryResult: previous.retryResult || previous.failed,
+              status: { ...current, active: false, needsRepair: false }
+            } : previous
           })
         }
       } catch (error) {
@@ -286,7 +310,7 @@ function ScopedNotificationsSettings({ browser, localBrowser, profile, subpage }
 
       if (reads !== pushReads.current) { return }
 
-      const enrolled = await refreshPushStatus()
+      const enrolled = await refreshPushStatus('setup')
 
       if (enrolled && (!enrolled.status?.active || enrolled.status.needsRepair)) {
         notify({ kind: 'error', message: pushCopy.setupUnconfirmed })
@@ -321,7 +345,7 @@ function ScopedNotificationsSettings({ browser, localBrowser, profile, subpage }
         ? { status: { ...previous.status, preview: undefined } }
         : previous)
       notify({ kind: 'error', message: pushCopy.previewUnconfirmed })
-      await refreshPushStatus({ observeOnly: true })
+      await refreshPushStatus('preview')
     } finally {
       reads.version++
       reads.writing = false
@@ -426,12 +450,14 @@ function ScopedNotificationsSettings({ browser, localBrowser, profile, subpage }
 
             {browser && <BrowserPermissionRow />}
 
-            {localBrowser && (pushError || pushStatus?.available || pushState.retryResult) && (
+            {localBrowser && (showStatusRetry || pushStatus?.available || pushState.retryResult) && (
               <ListRow
-                action={pushError ? (
+                action={showStatusRetry ? (
                   <Button
                     disabled={pushBusy}
-                    onClick={event => void refreshPushStatus({ observeOnly: true, retryButton: event.currentTarget })}
+                    key="retry"
+                    onClick={() => void refreshPushStatus('retry')}
+                    ref={handoffRetryFocus}
                     size="sm"
                     type="button"
                     variant="outline"
@@ -439,7 +465,7 @@ function ScopedNotificationsSettings({ browser, localBrowser, profile, subpage }
                     {pushCopy.retry}
                   </Button>
                 ) : pushStatus?.available && (!pushStatus.active || pushStatus.needsRepair) && (
-                  <Button disabled={pushBusy || !prefs.enabled || setupBlockedByKind}
+                  <Button disabled={pushBusy || !prefs.enabled || setupBlockedByKind} key="setup"
                     onClick={() => void setupPush()} size="sm" type="button" variant="outline">
                     {pushStatus.needsRepair ? pushCopy.repair : pushCopy.enable}
                   </Button>
