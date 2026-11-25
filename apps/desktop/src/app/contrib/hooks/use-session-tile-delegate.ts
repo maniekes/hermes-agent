@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
 
 import {
   extendRefreshPageToOverlap,
@@ -25,6 +25,7 @@ import {
 } from '@/store/read-only-transcript'
 import { knownSessionOwner, ownerLookupSessionRows } from '@/store/session'
 import { assertSessionOwnerResolved } from '@/store/session-owner-resolution'
+import { isSessionRemovalPending } from '@/store/session-removal'
 import {
   profileScopeForSessionOwner,
   requestForSessionProfile,
@@ -184,6 +185,11 @@ export function useSessionTileDelegate({
   sessionStateByRuntimeIdRef,
   updateSessionState
 }: SessionTileDelegateParams): void {
+  // Updating the delegate's callbacks does not invalidate an attached read.
+  const bindingGeneration = useRef(0)
+
+  useEffect(() => () => { bindingGeneration.current++ }, [])
+
   useEffect(() => {
     // A tile's runtime binding can die the same way the foreground's does
     // (sleep/wake, backend restart). The cache maps stored -> runtime, so walk
@@ -312,6 +318,8 @@ export function useSessionTileDelegate({
       // request; dropping it made the next send re-resume the open chat, which
       // blanked its status stack and transcript until the resume answered.
       invalidateRuntimeBindings: preserveStoredSessionIds => {
+        bindingGeneration.current++
+
         for (const [storedSessionId, runtimeId] of runtimeIdByStoredSessionIdRef.current) {
           if (runtimeId !== storedSessionId && !preserveStoredSessionIds?.has(storedSessionId)) {
             runtimeIdByStoredSessionIdRef.current.delete(storedSessionId)
@@ -422,12 +430,10 @@ export function useSessionTileDelegate({
 
         const restScope = tileRestScope(owner)
 
-        const prefetchPromise = authoritativeSnapshot
-          ? Promise.resolve(null)
-          : getLatestSessionMessages(storedSessionId, restScope).catch(() => null)
+        const readTranscript = () => getLatestSessionMessages(storedSessionId, restScope).catch(() => null)
 
         if (!authoritativeSnapshot && existing && isWarmTileState(cached, storedSessionId)) {
-          const prefetch = await prefetchPromise
+          const prefetch = await readTranscript()
 
           // A long turn can push every rendered row off the newest page; read
           // older pages until they overlap so the graft keeps earlier history.
@@ -456,6 +462,10 @@ export function useSessionTileDelegate({
           return existing
         }
 
+        const generation = bindingGeneration.current
+        const states = sessionStateByRuntimeIdRef.current
+        const tile = $sessionTiles.get().find(candidate => candidate.storedSessionId === storedSessionId)
+
         // #94724 no-owner recovery: dispatching the resume through the same
         // fail-closed gate as the window's RPC dispatcher keeps an unknown
         // owner off the ambient socket, and the wrapper opens the stored
@@ -480,8 +490,7 @@ export function useSessionTileDelegate({
           },
           async () => {
             const stored =
-              (await prefetchPromise) ??
-              (await getLatestSessionMessages(storedSessionId, restScope).catch(() => null)) ??
+              (await readTranscript()) ??
               (await fetchStoredTranscriptAcrossBackends(storedSessionId))
 
             if (!stored) {
@@ -491,8 +500,6 @@ export function useSessionTileDelegate({
             return stored
           }
         )
-
-        const prefetch = await prefetchPromise
 
         if (outcome.mode === 'read-only') {
           const readOnlyId = readOnlyRuntimeIdFor(storedSessionId)
@@ -525,6 +532,51 @@ export function useSessionTileDelegate({
           throw new Error('resume returned no session id')
         }
 
+        // The attachment is the transcript barrier. If a turn already ended,
+        // this read sees its durable reply. Otherwise the attached socket can
+        // deliver its completion while the read is pending.
+        const liveAtRead = states.get(runtimeId)
+        const baseline = liveAtRead?.messages.length ? liveAtRead.messages : resumeRequestBaselineMessages
+        const page = authoritativeSnapshot ? null : await readTranscript()
+        const attachedStoredId = resumed.info?.stored_session_id || resumed.session_key || resumed.resumed || storedSessionId
+        const pageMessages = page?.session_id === attachedStoredId ? page.messages : []
+
+        const tail = pageMessages.length
+          ? await extendRefreshPageToOverlap(
+              toChatMessages(pageMessages), baseline, olderPageReader(storedSessionId, restScope, page)
+            )
+          : []
+
+        const currentTile = $sessionTiles.get().find(candidate => candidate.storedSessionId === storedSessionId)
+
+        if (isSessionRemovalPending(storedSessionId) || (tile && !currentTile)) {
+          return runtimeId
+        }
+
+        const currentState = states.get(runtimeId)
+        const readEpoch = liveAtRead?.transcriptAuthorityEpoch ?? 0
+        const currentEpoch = currentState?.transcriptAuthorityEpoch ?? 0
+
+        // The first session.info may bind the attached runtime to its stored id.
+        // That single transition is part of attachment, not a lineage change.
+        const firstStoredBinding =
+          !liveAtRead?.storedSessionId &&
+          currentState?.storedSessionId === attachedStoredId &&
+          currentEpoch === readEpoch + 1
+
+        if (
+          bindingGeneration.current !== generation ||
+          states !== sessionStateByRuntimeIdRef.current ||
+          currentTile?.ownerRoute !== tile?.ownerRoute ||
+          currentTile?.ownerProfile !== tile?.ownerProfile ||
+          (currentState?.storedSessionId &&
+            currentState.storedSessionId !== storedSessionId &&
+            currentState.storedSessionId !== attachedStoredId) ||
+          (currentEpoch !== readEpoch && !firstStoredBinding)
+        ) {
+          throw new Error('Session binding changed while loading the transcript')
+        }
+
         const currentBinding = boundTileRuntimeId(runtimeIdByStoredSessionIdRef, storedSessionId)
 
         // Another resume/rebind won while this request was in flight. Do not
@@ -552,9 +604,19 @@ export function useSessionTileDelegate({
                     previousMessages
                   )
                 : previousMessages
-              : previousMessages.length > 0
-                ? previousMessages
-                : toChatMessages(prefetch?.messages ?? resumed.messages ?? [])
+              : tail.length > 0
+                ? overlayConcurrentMessageChanges(
+                    mergeTileTranscript(baseline, tail, liveAtRead?.streamId), baseline, previousMessages
+                  )
+                : previousMessages.length > 0
+                  ? previousMessages
+                  : toChatMessages(resumed.messages ?? [])
+
+            // REST only supplies transcript content. State received while it
+            // was pending already owns the live turn and model metadata.
+            if (!authoritativeSnapshot && currentState !== liveAtRead) {
+              return { ...state, messages }
+            }
 
             const busyChangedWhileResuming = cached
               ? Boolean(

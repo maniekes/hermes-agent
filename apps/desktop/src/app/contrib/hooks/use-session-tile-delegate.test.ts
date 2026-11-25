@@ -17,6 +17,7 @@ import {
   clearSingleFlightSessionResumeState,
   singleFlightSessionResume
 } from '../../session/hooks/use-prompt-actions/single-flight-resume'
+import { invalidatePersistedDisplayTranscriptAuthority } from '../../session/hooks/use-session-actions/transcript-provenance'
 
 import { useSessionTileDelegate } from './use-session-tile-delegate'
 
@@ -63,7 +64,7 @@ function renderTile(
     updateSessionState?: ReturnType<typeof vi.fn>
   } = {}
 ) {
-  renderHook(() =>
+  return renderHook(() =>
     useSessionTileDelegate({
       archiveSession: vi.fn(async () => undefined),
       branchLoadedSession: (options.branchLoadedSession ?? vi.fn(async () => false)) as never,
@@ -197,6 +198,92 @@ describe('useSessionTileDelegate resumeTile', () => {
       profile: 'backend-oxcoder'
     })
     expect(ambientRequest).not.toHaveBeenCalled()
+  })
+
+  it.each([false, true])('keeps live state received before REST returns (first stored binding: %s)', async firstBinding => {
+    const id = 'stored-barrier'
+    const states = { current: new Map([[id, createClientSessionState(firstBinding ? null : id)]]) }
+
+    const update = vi.fn((runtimeId: string, apply: (state: ClientSessionState) => ClientSessionState) => {
+      const next = apply(states.current.get(runtimeId) ?? createClientSessionState(id))
+      states.current.set(runtimeId, next)
+
+      return next
+    })
+
+    const attach = Promise.withResolvers<Awaited<ReturnType<typeof requestGatewayForProfile>>>()
+    const page = Promise.withResolvers<Awaited<ReturnType<typeof getLatestSessionMessages>>>()
+
+    setSessions([row({ id })])
+    vi.mocked(requestGatewayForProfile).mockReturnValueOnce(attach.promise)
+    vi.mocked(getLatestSessionMessages).mockReturnValueOnce(page.promise)
+    const { rerender } = renderTile(vi.fn(), { sessionStateByRuntimeIdRef: states, updateSessionState: update })
+
+    const resume = sessionTileDelegate()!.resumeTile(id)
+
+    await vi.waitFor(() => expect(requestGatewayForProfile).toHaveBeenCalled())
+    expect(getLatestSessionMessages).not.toHaveBeenCalled()
+    attach.resolve({ session_id: id, resumed: id, messages_omitted: true, messages: [], running: true } as never)
+    await vi.waitFor(() => expect(getLatestSessionMessages).toHaveBeenCalledOnce())
+
+    const newer = createClientSessionState(id, [
+      { id: 'assistant-live-complete', role: 'assistant', rowId: 3, parts: [textPart('latest answer')] }
+    ])
+
+    const liveState = firstBinding ? invalidatePersistedDisplayTranscriptAuthority(newer) : newer
+    states.current.set(id, { ...liveState, busy: false, model: 'live-model' })
+    rerender()
+    page.resolve({ session_id: id, messages: [
+      { role: 'user', content: 'earlier prompt', timestamp: 1, row_id: 1 },
+      { role: 'assistant', content: 'committed reply', timestamp: 2, row_id: 2 }
+    ] })
+    await expect(resume).resolves.toBe(id)
+    expect(states.current.get(id)).toMatchObject({ busy: false, model: 'live-model' })
+    expect(states.current.get(id)?.messages.map(message => message.rowId)).toEqual([1, 2, 3])
+  })
+
+  it.each(['reconnect', 'profile switch', 'lineage changed', 'close'])('discards a pending cold page on %s', async mode => {
+    const id = 'stored-obsolete'
+    const tile = { storedSessionId: id, ownerProfile: 'default' }
+    const page = Promise.withResolvers<Awaited<ReturnType<typeof getLatestSessionMessages>>>()
+    const updateSessionState = vi.fn()
+    const states = { current: new Map([[id, createClientSessionState(id)]]) }
+
+    setSessions([row({ id })])
+    $sessionTiles.set([tile] as never)
+    vi.mocked(requestGatewayForProfile).mockResolvedValueOnce({
+      session_id: id, resumed: id, messages_omitted: true, messages: []
+    } as never)
+    vi.mocked(getLatestSessionMessages).mockReturnValueOnce(page.promise)
+    renderTile(vi.fn(), { sessionStateByRuntimeIdRef: states, updateSessionState })
+
+    try {
+      const delegate = sessionTileDelegate()!
+      const resume = delegate.resumeTile(id)
+
+      await vi.waitFor(() => expect(getLatestSessionMessages).toHaveBeenCalledOnce())
+
+      if (mode === 'reconnect') { delegate.invalidateRuntimeBindings?.() }
+
+      if (mode === 'profile switch') { $sessionTiles.set([{ ...tile, ownerProfile: 'other' }] as never) }
+
+      if (mode === 'lineage changed') {
+        states.current.set(id, invalidatePersistedDisplayTranscriptAuthority(states.current.get(id)!))
+      }
+
+      if (mode === 'close') { $sessionTiles.set([]) }
+      page.resolve({ session_id: id, messages: [{ role: 'assistant', content: 'obsolete answer', timestamp: 1 }] })
+
+      if (mode === 'close') {
+        await expect(resume).resolves.toBe(id)
+      } else {
+        await expect(resume).rejects.toThrow('Session binding changed')
+      }
+
+      expect(updateSessionState).not.toHaveBeenCalled()
+    } finally {
+      $sessionTiles.set([])
+    }
   })
 
   it('reuses a warm binding that still carries a transcript', async () => {
