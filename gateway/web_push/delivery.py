@@ -174,7 +174,7 @@ class WebPush:
             logger.warning("Webapp push unavailable: check the web-push extra and private credentials")
             return None
 
-    def register(self, authority, device, owner, login, value):
+    def register(self, authority, device, owner, login, value, *, authority_owner=None):
         subscription = normalize_subscription(value)
         control = self.control_db or authority.db
 
@@ -192,9 +192,21 @@ class WebPush:
         material = hmac.digest(self.storage_secret, encoded, "sha256").hex()
         nonce = secrets.token_bytes(12)
         sealed = nonce + self.cipher.encrypt(nonce, encoded, self._aad(authority, device))
-        version = authority.db._execute_write(lambda conn: store.subscribe(
-            conn, device, owner, login, self.vapid_id, fingerprint, sealed, time.time(),
-            material=material, grant=grant, profile_grant=profile_grant))
+        def subscribe(conn):
+            if authority_owner is not None:
+                from gateway.session_authorities import require_serving
+                from hermes_state_runtime import _epoch
+
+                require_serving(authority)
+                authority._require_admission_open()
+                _epoch(conn, authority.epoch)
+            if not browser_credential.is_current(login):
+                return None
+            return store.subscribe(
+                conn, device, owner, login, self.vapid_id, fingerprint, sealed, time.time(),
+                material=material, grant=grant, profile_grant=profile_grant, authority_owner=authority_owner)
+
+        version = authority.db._execute_write(subscribe)
         return grant if version is not None else None
 
     @staticmethod

@@ -9,7 +9,8 @@ from starlette.concurrency import run_in_threadpool
 from starlette.responses import JSONResponse
 
 from gateway.session_authorities import local_bots, served_profile_name
-from gateway.session_identity import authenticated_principal_digest
+from gateway.session_identity import authenticated_principal_digest, is_authenticated_identity
+from gateway.owner_identity import host_owner_subject, principal_subject
 from gateway.web_push import store
 from gateway.web_push.conversation import change_profile_default, manages_response_ready, profile_default
 from gateway.web_push.delivery import PreviewSendUnconfirmed, installation_digest
@@ -38,10 +39,23 @@ def _device(request):
     return installation_digest(values[0]) if len(values) == 1 else None
 
 
+def _identity(session):
+    return {"provider": session.provider, "user_id": session.user_id, "issuer": session.issuer}
+
+
 def _principal(session):
-    return authenticated_principal_digest({
-        "provider": session.provider, "user_id": session.user_id, "issuer": session.issuer,
-    })
+    return authenticated_principal_digest(_identity(session))
+
+
+def _verified_authority_owner(session):
+    # Use the same authenticated actor mapping as the gateway. Retain the distinct
+    # provider/issuer principal in the subscription as an independent grant fence.
+    identity = _identity(session)
+    if is_authenticated_identity(identity):
+        subject = principal_subject(identity)
+        if subject == host_owner_subject():
+            return subject
+    return None
 
 
 def _control_db(state):
@@ -255,8 +269,18 @@ async def push_action(request: Request, action: str, profile: str | None = None)
         return _response(preview=preview)
     if action in {"subscribe", "check"}:
         try:
-            operation = push.register if action == "subscribe" else push.matches
-            result = await run_in_threadpool(operation, authority, device, owner, login, value)
+            if action == "subscribe":
+                if request.query_params.getlist("profile") != ([profile] if profile else []):
+                    raise HTTPException(400, "Expected at most one Webapp profile")
+                verified_owner = _verified_authority_owner(request.state.session)
+                result = await run_in_threadpool(push.register, authority, device, owner, login, value,
+                                                 authority_owner=verified_owner)
+            else:
+                result = await run_in_threadpool(push.matches, authority, device, owner, login, value)
+        except RuntimeStoreError as exc:
+            if exc.reason in {"runtime_draining", "runtime_retired", "stale_epoch"}:
+                raise HTTPException(503, "Selected Webapp profile is unavailable") from None
+            raise
         except ValueError:
             raise HTTPException(400, "Invalid or unsupported Web Push subscription") from None
         if action == "subscribe":
