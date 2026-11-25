@@ -13,7 +13,7 @@ from gateway.session_identity import authenticated_principal_digest, is_authenti
 from gateway.owner_identity import host_owner_subject, principal_subject
 from gateway.web_push import store
 from gateway.web_push.conversation import change_profile_default, manages_response_ready, profile_default
-from gateway.web_push.delivery import PreviewSendUnconfirmed, installation_digest
+from gateway.web_push.delivery import EnrollmentUnconfirmed, PreviewSendUnconfirmed, installation_digest
 from hermes_cli import browser_credential
 from hermes_cli.dashboard_auth.cookies import read_web_push_revoke_cookie, set_web_push_revoke_cookie
 from hermes_cli.dashboard_auth.request_utils import cookie_origin_is_allowed
@@ -277,6 +277,8 @@ async def push_action(request: Request, action: str, profile: str | None = None)
                                                  authority_owner=verified_owner)
             else:
                 result = await run_in_threadpool(push.matches, authority, device, owner, login, value)
+        except EnrollmentUnconfirmed:
+            raise HTTPException(503, "web_push_enrollment_unconfirmed") from None
         except RuntimeStoreError as exc:
             if exc.reason in {"runtime_draining", "runtime_retired", "stale_epoch"}:
                 raise HTTPException(503, "Selected Webapp profile is unavailable") from None
@@ -285,8 +287,10 @@ async def push_action(request: Request, action: str, profile: str | None = None)
             raise HTTPException(400, "Invalid or unsupported Web Push subscription") from None
         if action == "subscribe":
             key = browser_credential.current_if(login)
-            if result is None or key is None:
+            if result is None:
                 raise HTTPException(409, "Web Push subscription is assigned to another installation")
+            if key is None:
+                raise HTTPException(503, "web_push_enrollment_unconfirmed")
             response = _response(active=True)
             set_web_push_revoke_cookie(response, request, _logout_proof(key, device, owner, result),
                                        cookie_gateway(request))

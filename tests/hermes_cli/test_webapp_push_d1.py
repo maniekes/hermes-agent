@@ -1,5 +1,6 @@
 """D1 contracts through authenticated Webapp, canonical settlement and fake provider."""
 import json
+import time
 
 import pytest
 
@@ -185,9 +186,145 @@ def test_owner_stamp_is_not_a_grant_after_profile_revocation_or_logout(fixture, 
 
 
 
-def test_stale_profile_authority_cannot_bind_installation(fixture, endpoint):
+def test_stale_profile_authority_cannot_claim_installation_elsewhere(fixture, gated, endpoint):
+    from tests.hermes_cli.test_webapp_gated_sign_out import _sign_in_with_oauth
+
     authority = fixture.beta
     begin_runtime_epoch(authority.db, instance_id="synthetic-replaced-authority")
     assert _enroll(fixture.browser, endpoint, profile="beta").status_code == 503
+    other = gated.browser()
+    _sign_in_with_oauth(other)
+    assert _enroll(other, endpoint, profile="default").status_code == 200
     with authority.db._read_ctx() as conn:
         assert conn.execute("SELECT count(*) FROM web_push_subscriptions").fetchone()[0] == 0
+    with fixture.default.db._read_ctx() as conn:
+        assert [row[0] for row in conn.execute("SELECT profile FROM web_push_profile_grants")] == ["default"]
+
+
+def test_draining_profile_and_endpoint_conflict_do_not_claim_device(fixture, gated, endpoint, monkeypatch):
+    from gateway.web_push.delivery import installation_digest
+    from tests.hermes_cli.test_webapp_gated_sign_out import _sign_in_with_oauth
+
+    browser = fixture.browser
+    with monkeypatch.context() as draining:
+        draining.setattr(fixture.runner, "_draining", True)
+        assert _enroll(browser, endpoint, profile="beta").status_code == 503
+    assert _enroll(browser, endpoint, profile="beta").status_code == 200
+    assert _enroll(browser, endpoint, device=DESKTOP, profile="beta").status_code == 409
+    with fixture.default.db._read_ctx() as conn:
+        assert conn.execute("SELECT count(*) FROM web_push_devices WHERE device=?",
+                            (installation_digest(DESKTOP),)).fetchone()[0] == 0
+    other = gated.browser()
+    _sign_in_with_oauth(other)
+    assert _enroll(other, endpoint, device=DESKTOP, profile="default").status_code == 200
+
+
+def test_unconfirmed_cross_database_write_is_reported_and_renewal_reconciles(fixture, endpoint, monkeypatch):
+    import sqlite3
+
+    from gateway.web_push.delivery import installation_digest
+    from tests.hermes_cli.test_webapp_push import PATH, _headers
+
+    browser, control, beta = fixture.browser, fixture.default.db, fixture.beta.db
+    write = control._execute_write
+
+    def control_failure(callback, *args, **kwargs):
+        def lose_confirmation(conn):
+            assert callback(conn) is not None
+            raise sqlite3.OperationalError("synthetic control commit failure")
+        return write(lose_confirmation, *args, **kwargs)
+
+    with monkeypatch.context() as fault:
+        fault.setattr(control, "_execute_write", control_failure)
+        response = _enroll(browser, endpoint, profile="beta")
+    assert response.status_code == 503
+    assert response.json() == {"detail": "web_push_enrollment_unconfirmed"}
+    assert browser.get(PATH, headers=_headers(PHONE), params={"profile": "beta"}).json()["active"] is False
+    with beta._read_ctx() as conn:
+        profile_row = conn.execute("SELECT * FROM web_push_subscriptions").fetchone()
+        assert profile_row["version"]
+    assert _enroll(browser, endpoint, profile="beta").status_code == 200
+    selected = fixture.runner.web_push.active(fixture.beta, installation_digest(PHONE), profile_row["owner"], generation())
+    assert selected["version"] == profile_row["version"]
+
+
+def test_revocation_ordered_after_in_flight_renewal_still_revokes(fixture, endpoint, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+
+    from gateway.web_push import store
+    from tests.hermes_cli.test_webapp_push import PATH, _headers
+
+    browser = fixture.browser
+    assert _enroll(browser, endpoint, profile="beta").status_code == 200
+    profile_entered, release, revoke_requested = Event(), Event(), Event()
+    subscribe, write = store.subscribe, fixture.default.db._execute_write
+
+    def pause_profile(*args, **kwargs):
+        profile_entered.set()
+        assert release.wait(8)
+        return subscribe(*args, **kwargs)
+
+    def observe_control(callback, *args, **kwargs):
+        if getattr(callback, "func", None) is store.revoke_device:
+            revoke_requested.set()
+        return write(callback, *args, **kwargs)
+
+    monkeypatch.setattr(store, "subscribe", pause_profile)
+    monkeypatch.setattr(fixture.default.db, "_execute_write", observe_control)
+    with ThreadPoolExecutor(max_workers=2) as workers:
+        renewal = workers.submit(_enroll, browser, endpoint, profile="beta")
+        try:
+            assert profile_entered.wait(8)
+            revoke = workers.submit(_act, browser, "disable-all")
+            assert revoke_requested.wait(8)
+            assert not revoke.done()
+        finally:
+            release.set()
+        assert renewal.result(timeout=8).status_code == 200
+        assert revoke.result(timeout=8).json() == {"applied": True}
+    assert browser.get(PATH, headers=_headers(PHONE), params={"profile": "beta"}).json()["active"] is False
+
+
+def test_failed_settlement_wire_can_be_seen_only_by_initiating_installation(fixture, endpoint, monkeypatch):
+    from gateway.session_settlement_recovery import completion_payload
+    from tests.hermes_cli.test_webapp_push import PATH, _headers
+
+    browser, authority = fixture.browser, fixture.beta
+    assert _enroll(browser, endpoint, profile="beta").status_code == 200
+    assert _enroll(browser, {**endpoint, "endpoint": endpoint["endpoint"] + "-desktop"},
+                   device=DESKTOP, profile="beta").status_code == 200
+    started, _ = admit(fixture, monkeypatch)
+    terminal = settle(authority, started, "failed")
+    payload = completion_payload(started, terminal, CANARY, {"result": {"error_surface": {}}})
+    assert (payload["status"], payload["outcome"], payload["web_push"]) == ("error", "failed", True)
+    for device, expected in ((DESKTOP, False), (PHONE, True)):
+        seen = browser.post(PATH + "/seen", headers=_headers(device), params={"profile": "beta"},
+                            json=started["admission_id"])
+        assert seen.json() == {"applied": expected}
+    _due_now(authority)
+    assert not fixture.runner.web_push.deliver_one(authority, "beta", generation())
+    assert fixture.sends == []
+
+
+def test_preview_requires_positive_terminal_receipt_on_synthetic_inconsistent_state(fixture, endpoint, monkeypatch):
+    from gateway.web_push import store
+
+    browser, authority = fixture.browser, fixture.beta
+    assert _enroll(browser, endpoint, profile="beta").status_code == 200
+    started, _ = admit(fixture, monkeypatch)
+    settle(authority, started, "failed")
+    _due_now(authority)
+
+    class RestoreSyntheticState(Exception):
+        pass
+
+    def probe(conn):
+        delivery = store.next_delivery(conn, time.time())
+        assert store.preview_source(conn, delivery)["answer"] == FAILURE
+        conn.execute("DELETE FROM session_admissions WHERE admission_id=?", (started["admission_id"],))
+        assert store.preview_source(conn, delivery) is None
+        raise RestoreSyntheticState
+
+    with pytest.raises(RestoreSyntheticState):
+        authority.db._execute_write(probe)

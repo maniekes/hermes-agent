@@ -283,6 +283,8 @@ def preview_source(conn, row):
         """SELECT substr(s.title, 1, ?) AS title,
                   substr(json_extract(r.value, '$.result.final_response'), 1, ?) AS answer
            FROM sessions s JOIN state_meta r ON r.key=?
-           WHERE s.id=? AND CASE WHEN json_valid(r.value) THEN json_type(r.value, '$.result.final_response') END='text'""",
+           JOIN session_admissions a ON a.admission_id=? AND a.target_session_id=s.id
+           WHERE s.id=? AND a.status='terminal' AND a.outcome='completed'
+             AND CASE WHEN json_valid(r.value) THEN json_type(r.value, '$.result.final_response') END='text'""",
         (PREVIEW_TITLE_SOURCE_LIMIT + 1, PREVIEW_ANSWER_SOURCE_LIMIT + 1,
-         RESULT_PREFIX + row["id"], row["session_id"])).fetchone()
+         RESULT_PREFIX + row["id"], row["id"], row["session_id"])).fetchone()

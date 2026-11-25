@@ -454,7 +454,10 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
     // in this page establishes ownership and is consumed by the first terminal frame.
     const usesPush = browser && payload?.web_push === true
 
-    if (usesPush && ownTurnId && event.admission_id && payload?.status === 'complete' &&
+    const readablePushResult = payload?.status === 'complete' ||
+      (payload?.status === 'error' && payload.outcome === 'failed')
+
+    if (usesPush && ownTurnId && event.admission_id && readablePushResult &&
       (!event.connectionId || event.connectionId === LOCAL_CONNECTION_ID) && ctx.fromActiveSource() && !document.hidden &&
       document.hasFocus() && $focusedRuntimeId.get() === sessionId && !composerFocusBlockedBySurface()) {
       acknowledgeBrowserPush(event.admission_id, event.profile)

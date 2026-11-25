@@ -97,6 +97,7 @@ export type ChatMessage = {
 
 export type GatewayEventPayload = {
   web_push?: boolean
+  outcome?: string
   response_ready_managed?: boolean
   /** Unix seconds supplied by tests/newer gateways; the desktop falls back to
    * its local receipt clock when older gateways omit it. */
