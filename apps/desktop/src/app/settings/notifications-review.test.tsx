@@ -349,3 +349,121 @@ it('offers a status check after accepted enrollment reads inactive before anothe
   expect(enableBrowserPush).toHaveBeenCalledOnce()
   expect(api.mock.calls.filter(([, req]) => req.path === statusPath)).toHaveLength(4)
 })
+
+it('keeps Retry after acknowledged setup and rejected confirmation until an explicit read succeeds', async () => {
+  let statusReads = 0
+  getSubscription.mockResolvedValue(null)
+  api.mockImplementation(async (_boot, req) => {
+    if (req.path.endsWith('profile-default')) {return undefined as never}
+
+    if (req.path !== statusPath) {throw new Error('unexpected request')}
+
+    if ([2, 4, 5, 7].includes(++statusReads)) {throw new Error('status unavailable')}
+
+    return inactive as never
+  })
+  view()
+  const setup = await screen.findByRole('button', { name: 'Set up on this device' })
+
+  await act(async () => { fireEvent.click(setup) })
+  const retry = screen.getByRole('button', { name: 'Retry status' })
+  expect(notify).toHaveBeenCalledWith({
+    kind: 'error', message: 'Could not confirm background notification setup. Check the status before trying again.'
+  })
+  retry.focus()
+
+  for (const expectedReads of [3, 4, 5, 6]) {
+    await act(async () => { fireEvent.focus(window) })
+    expect(statusReads).toBe(expectedReads)
+    expect(screen.getByRole('button', { name: 'Retry status' })).toBe(retry)
+    expect(screen.queryByRole('button', { name: 'Set up on this device' })).toBeNull()
+    expect(enableBrowserPush).toHaveBeenCalledOnce()
+  }
+
+  expect(retry.ownerDocument.activeElement).toBe(retry)
+
+  await act(async () => { fireEvent.click(retry) })
+  expect(statusReads).toBe(7)
+  expect(retry.ownerDocument.activeElement).toBe(retry)
+  expect(screen.queryByRole('button', { name: 'Set up on this device' })).toBeNull()
+
+  await act(async () => { fireEvent.focus(window) })
+  expect(statusReads).toBe(8)
+  expect(screen.getByRole('button', { name: 'Retry status' })).toBe(retry)
+  expect(screen.queryByRole('button', { name: 'Set up on this device' })).toBeNull()
+
+  await act(async () => { fireEvent.click(retry) })
+  expect(statusReads).toBe(9)
+  expect(screen.getByRole('button', { name: 'Set up on this device' })).not.toBe(retry)
+  expect(retry.ownerDocument.activeElement).toBe(screen.getByRole('status'))
+  expect(enableBrowserPush).toHaveBeenCalledOnce()
+  expect(update).not.toHaveBeenCalled()
+  expect(register).not.toHaveBeenCalled()
+  expect(requestPermission).not.toHaveBeenCalled()
+})
+
+it('releases the recovery gate on passive confirmed activation after the original read rejects', async () => {
+  let statusReads = 0
+  getSubscription.mockResolvedValue(null)
+  api.mockImplementation(async (_boot, req) => {
+    if (req.path.endsWith('profile-default')) {return undefined as never}
+
+    if (req.path.endsWith('/check')) {return { active: true } as never}
+
+    if (req.path !== statusPath) {throw new Error('unexpected request')}
+
+    if (++statusReads === 2) {throw new Error('status unavailable')}
+
+    return (statusReads === 3 ? active : inactive) as never
+  })
+  view()
+  const setup = await screen.findByRole('button', { name: 'Set up on this device' })
+
+  await act(async () => { fireEvent.click(setup) })
+  const retry = screen.getByRole('button', { name: 'Retry status' })
+  retry.focus()
+  getSubscription.mockResolvedValue({
+    options: { applicationServerKey: Uint8Array.of(1).buffer },
+    toJSON: () => ({ endpoint: 'https://fixture.invalid/push' })
+  })
+
+  await act(async () => { fireEvent.focus(window) })
+  expect(statusReads).toBe(3)
+  expect(screen.queryByRole('button', { name: 'Retry status' })).toBeNull()
+  expect(screen.getByRole('switch', { name: 'Show message previews' })).toBeTruthy()
+  expect(sendButton().disabled).toBe(false)
+  expect(retry.ownerDocument.activeElement).toBe(screen.getByRole('status'))
+  expect(enableBrowserPush).toHaveBeenCalledOnce()
+  await waitFor(() => expect(update).toHaveBeenCalledOnce())
+})
+
+it('ignores a rejected setup confirmation after switching the active profile', async () => {
+  const confirmation = deferred<void>()
+  let alphaReads = 0
+  getSubscription.mockResolvedValue(null)
+  api.mockImplementation(async (_boot, req) => {
+    if (req.path.endsWith('profile-default')) {return undefined as never}
+
+    if (req.path !== statusPath) {throw new Error('unexpected request')}
+
+    if (req.profile === 'alpha' && ++alphaReads === 2) {
+      await confirmation.promise
+      throw new Error('status unavailable')
+    }
+
+    return inactive as never
+  })
+  chooseProfile('alpha')
+  view()
+  const setup = await screen.findByRole('button', { name: 'Set up on this device' })
+
+  await act(async () => { fireEvent.click(setup) })
+  expect(alphaReads).toBe(2)
+  await switchTo('beta')
+  const betaSetup = screen.getByRole('button', { name: 'Set up on this device' })
+  await act(async () => confirmation.finish(undefined))
+  expect(screen.queryByRole('button', { name: 'Retry status' })).toBeNull()
+  expect(screen.getByRole('button', { name: 'Set up on this device' })).toBe(betaSetup)
+  expect(notify).not.toHaveBeenCalled()
+  expect(enableBrowserPush).toHaveBeenCalledOnce()
+})

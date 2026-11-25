@@ -199,7 +199,7 @@ function ScopedNotificationsSettings({ browser, localBrowser, profile, subpage }
 
       // A passive refresh may confirm activation. Otherwise let the user check explicitly before offering another write.
       const setupUnconfirmed = reason === 'setup'
-        ? Boolean(next.status) && !confirmed
+        ? !confirmed
         : previous.setupUnconfirmed && !confirmed && (reason !== 'retry' || next.failed)
 
       // Keep the live region mounted when a retry row resolves to an unavailable status.
