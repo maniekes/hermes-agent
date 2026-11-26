@@ -4,6 +4,7 @@ SessionDB through ``SessionMessagesMixin``; built on its _message_row_params/_ex
 
 from __future__ import annotations
 
+from sqlite3 import Connection
 import time
 from typing import Any
 
@@ -31,14 +32,16 @@ class SessionDetachedResultsMixin:
                                             (delegation_id, metadata.get("delivery_notice", "")))
 
     def append_completion_note(self, session_id: str, admission_id: str, content: str, display_kind: str,
-                               metadata: dict[str, Any]) -> int:
-        """Record an unviewed completion's note once, keyed by its admission (stored as ``completion_admission``)."""
+                               metadata: dict[str, Any], *, _connection: Connection | None = None) -> int:
+        """Record a completion note once; the FIFO may include it in its own writer transaction."""
         return self._append_detached_result(
             session_id, content, display_kind, {**metadata, "completion_admission": admission_id},
-            "json_extract(m.display_metadata, '$.completion_admission') = ?", (admission_id,))
+            "json_extract(m.display_metadata, '$.completion_admission') = ?", (admission_id,),
+            _connection=_connection)
 
     def _append_detached_result(self, session_id: str, content: str, display_kind: str, metadata: dict[str, Any],
-                                match_sql: str, params: tuple) -> int:
+                                match_sql: str, params: tuple, *,
+                                _connection: Connection | None = None) -> int:
         """Record a result that arrived between turns as a user row once, including replay after rotation: a row
         ``match_sql`` (a condition on ``m``) finds in the compression lineage is returned instead. Check and insert
         share the writer transaction, so independent gateway processes cannot duplicate it; a live turn refuses it."""
@@ -56,4 +59,6 @@ class SessionDetachedResultsMixin:
             self._bump_session_counters(conn, session_id, 1, 0, unit=True)
             return msg_id
 
+        if _connection is not None:
+            return _do(_connection)
         return self._execute_write(_do, patience_s=self._TRANSCRIPT_WRITE_PATIENCE_S)

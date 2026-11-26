@@ -130,6 +130,17 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
              finished_at TEXT
            )"""
     )
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS conversation_reports (
+             execution_id TEXT PRIMARY KEY,
+             job_id TEXT NOT NULL,
+             target_session_id TEXT NOT NULL,
+             target_revision TEXT,
+             content TEXT NOT NULL,
+             created_at TEXT NOT NULL,
+             status TEXT NOT NULL CHECK(status IN ('pending', 'materialized', 'undelivered'))
+           )"""
+    )
     add_column_if_missing(
         conn, "deliveries", "for_failure",
         "for_failure INTEGER NOT NULL DEFAULT 0",

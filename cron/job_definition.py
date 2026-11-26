@@ -16,7 +16,7 @@ JOB_DEFINITION_FIELDS = frozenset({
     "script", "no_agent", "monitor_script", "monitor_url", "context_from",
     "schedule", "schedule_display", "deliver", "origin", "enabled_toolsets",
     "workdir", "attach_to_session", "reasoning_effort", "failure_deliver",
-    "timezone", "grace_minutes", "catch_up", "wrap_response",
+    "timezone", "grace_minutes", "catch_up", "wrap_response", "target_session_id",
 })
 
 
@@ -27,6 +27,9 @@ def merge_job_definition(local: dict[str, Any], authored: dict[str, Any]) -> dic
     past one-shot for a live job)."""
     merged = {key: value for key, value in local.items() if key not in JOB_DEFINITION_FIELDS}
     merged.update((key, authored[key]) for key in JOB_DEFINITION_FIELDS if key in authored)
+    from cron.conversation_reports import set_target_session, validate_target_session
+    target = validate_target_session(authored.get("target_session_id"))
+    set_target_session(merged, target, previous=local)
     merged["repeat"] = {
         "completed": (local.get("repeat") or {}).get("completed", 0),
         "times": (authored.get("repeat") or {}).get("times"),

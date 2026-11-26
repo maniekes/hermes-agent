@@ -274,12 +274,17 @@ def latest_session_admission(db, *, session_id: str, accept) -> dict | None:
 _ANY_HEAD = object()
 
 
-def claim_session_input(db, *, epoch: int, session_id: str, _guard=None, head=_ANY_HEAD) -> dict | bool | None:
+def claim_session_input(db, *, epoch: int, session_id: str, _guard=None, head=_ANY_HEAD,
+                        _complete_queued=None) -> dict | bool | None:
     """Claim the FIFO head. ``_guard(conn)`` (owner admission gate) raises to refuse inside the
     write transaction, so a drain that began while this waited on the writer still wins.
     ``head`` is the admission id the caller's preclaim checks validated (None: it saw nothing
     queued); if the head is another row by the time this write runs, nothing is claimed and False
-    tells the caller to re-read and validate the row that is now first."""
+    tells the caller to re-read and validate the row that is now first. A trusted note
+    producer can materialize and settle its exact head here, without a started turn."""
+    if _complete_queued is not None and (head is None or head is _ANY_HEAD):
+        raise ValueError("Completing a queued note requires an exact head")
+
     def write(conn):
         _epoch(conn, epoch)
         if _guard is not None:
@@ -299,6 +304,14 @@ def claim_session_input(db, *, epoch: int, session_id: str, _guard=None, head=_A
             return False
         if row is None:
             return None
+        if _complete_queued is not None:
+            outcome = _complete_queued(conn, _row(row))
+            if outcome not in {'completed', 'rejected'}:
+                raise ValueError("Invalid queued note outcome")
+            conn.execute("UPDATE session_admissions SET status='terminal', owner_epoch=?, outcome=? WHERE admission_id=?",
+                         (epoch, outcome, row['admission_id']))
+            conn.execute('UPDATE sessions SET runtime_revision=runtime_revision+1 WHERE id=?', (session_id,))
+            return _row(_admission(conn, row['admission_id']))
         generation = session['runtime_generation'] + 1
         conn.execute('UPDATE sessions SET runtime_generation=? WHERE id=?', (generation, session_id))
         changed = conn.execute("UPDATE session_admissions SET status='started',owner_epoch=?,generation=? WHERE admission_id=? AND status='queued'", (epoch, generation, row['admission_id']))

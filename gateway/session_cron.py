@@ -238,6 +238,7 @@ async def operation(authority, name, params, actor=None):
             result = [False, '', '', row.get('outcome') or 'unknown_execution']
     from cron.scheduler_liveness import owner_progress
     return {'status': row['status'], 'result': result, 'job_flags': flags,
+            'outcome': row.get('outcome') if row['status'] == 'terminal' else None,
             'progress_at': owner_progress.get(row['request_id'].rsplit(':', 1)[-1])}
 
 

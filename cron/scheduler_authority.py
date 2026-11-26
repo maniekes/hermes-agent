@@ -123,6 +123,7 @@ def run_canonical_job(job, *, extra_prompt=None, cancel_event=None, execution_id
                 await asyncio.to_thread(touch_execution_progress, request_id)
             if state['status'] == 'terminal':
                 job.update(state.get('job_flags') or {})
+                job['_conversation_report_outcome'] = state.get('outcome')
                 return tuple(state['result'])
             if state['status'] == 'unknown':
                 raise CronExecutionUnknown('unknown_execution: cron admission was not replayed')
@@ -219,6 +220,7 @@ def reconcile_pending(*, allow_connect=True):
             success, output, answer, error = state['result']
             job = dict(state['job'], **(state.get('job_flags') or {}))
             job['execution_id'] = params['request_id']
+            job['_conversation_report_outcome'] = state.get('outcome')
             # The same result verdicts as the ordinary tail: an agent-declared [CRON_FAILURE] and a
             # blank answer are failures, whichever process books them.
             success, error, declared = _apply_agent_failure_marker(job, success, error, answer)

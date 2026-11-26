@@ -3055,6 +3055,29 @@ class _RunDelivery:
     side_effect_ownership_lost: bool = False
 
 
+def _capture_conversation_report(delivery, fence, answer, execution_token):
+    job = delivery.job
+    execution_id = job.get('execution_id')
+    if not execution_id or not job.get("target_session_id"):
+        return
+    if _is_interrupted(job["id"], execution_token) or fence.operator_cancelled():
+        return
+    if job.get('_conversation_report_outcome') in {'cancelled', 'interrupted', 'unknown'}:
+        return
+    if delivery.success and (not answer.strip() or _is_cron_silence_response(answer)):
+        return
+    if not delivery.success and job.get('_model_unreachable'):
+        from cron.unreachable_retry import will_retry
+        if will_retry(job):
+            return
+    from cron.conversation_reports import capture
+
+    with fence.side_effect_fence() as owns_result:
+        if not owns_result:
+            raise _FireClaimLostDuringSideEffect
+        capture(execution_id, job, answer, success=delivery.success)
+
+
 def _save_compose_deliver(
     d: _RunDelivery, fence: _FireOwnership, final_response: str, output: str, *,
     adapters, loop, verbose: bool, execution_token,
@@ -3080,6 +3103,8 @@ def _save_compose_deliver(
             "Interrupted by gateway shutdown before the run finished "
             "(tool subprocess was killed mid-flight)."
         )
+
+    _capture_conversation_report(d, fence, final_response, execution_token)
 
     (
         deliver_content, d.blocked_config, _silent_alert, d.incident_acked, d.failure_incident_id,
