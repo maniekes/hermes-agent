@@ -82,6 +82,55 @@ describe('session transcript pagination ownership', () => {
     }
   )
 
+  it('confirms a physical transcript tip from the original owner after the ambient profile changes', async () => {
+    const owner = { connectionId: 'local', profile: 'work' }
+    const tail = { ...page([row(4)]), session_id: 'physical-tip', profile: 'work' }
+    const pending = Promise.withResolvers<SessionMessagesResponse>()
+
+    api.mockReturnValueOnce(pending.promise).mockResolvedValueOnce({ session_id: 'physical-tip', profile: 'work' })
+    const read = getLatestSessionMessages('logical-root', owner, { verifyResolvedSession: true })
+
+    setApiRequestProfile('other')
+    setApiRequestConnection('other-connection')
+    pending.resolve(tail)
+
+    await expect(read).resolves.toEqual(tail)
+    expect(api).toHaveBeenLastCalledWith({
+      connectionId: 'local',
+      profile: 'work',
+      path: '/api/sessions/logical-root/timeline?limit=1&profile=work'
+    })
+    expect(transcriptTailState('logical-root', owner)).toBeDefined()
+    expect(transcriptTailState('physical-tip', owner)).toBeDefined()
+  })
+
+  it.each([
+    { pageProfile: 'other', proofId: 'physical-tip', proofProfile: 'work', calls: 1 },
+    { pageProfile: 'work', proofId: 'other-id', proofProfile: 'work', calls: 2 },
+    { pageProfile: 'work', proofId: 'physical-tip', proofProfile: 'other', calls: 2 }
+  ])('rejects unverified pages before recording pagination ($pageProfile, $proofId, $proofProfile)',
+    async ({ pageProfile, proofId, proofProfile, calls }) => {
+      const owner = { connectionId: 'local', profile: 'work' }
+
+      api.mockResolvedValueOnce({ ...page([row(4)]), session_id: 'physical-tip', profile: pageProfile })
+        .mockResolvedValueOnce({ session_id: proofId, profile: proofProfile })
+
+      await expect(getLatestSessionMessages('logical-root', owner, { verifyResolvedSession: true })).rejects.toThrow(
+        /Transcript page/
+      )
+      expect(api).toHaveBeenCalledTimes(calls)
+      expect($transcriptTailBySessionId.get()).toEqual({})
+    })
+
+  it('keeps an exact-id page on the single-request path', async () => {
+    const data = page([row(4)])
+
+    api.mockResolvedValueOnce(data)
+
+    await expect(getLatestSessionMessages(data.session_id, 'default', { verifyResolvedSession: true })).resolves.toEqual(data)
+    expect(api).toHaveBeenCalledOnce()
+  })
+
   it('reads the whole transcript instead of adopting the oldest page from a backend that ignores order', async () => {
     setApiRequestConnection(null)
     const owner = { connectionId: 'local', profile: 'default' }

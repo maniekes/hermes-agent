@@ -537,21 +537,16 @@ export function useSessionTileDelegate({
         // deliver its completion while the read is pending.
         const liveAtRead = states.get(runtimeId)
         const baseline = liveAtRead?.messages.length ? liveAtRead.messages : resumeRequestBaselineMessages
-        const page = authoritativeSnapshot ? null : await readTranscript()
+
+        const page = authoritativeSnapshot
+          ? null
+          : await getLatestSessionMessages(storedSessionId, restScope, { verifyResolvedSession: true }).catch(() => null)
+
         const attachedStoredId = resumed.info?.stored_session_id || resumed.session_key || resumed.resumed || storedSessionId
-        const expectedProfile = typeof restScope === 'object' ? restScope?.profile : restScope
 
-        // Canonical resume can return the logical root for the very same
-        // owner-scoped request whose REST page names the requested physical tip.
-        const pageMatchesBinding = page &&
-          (page.session_id === storedSessionId || page.session_id === attachedStoredId) &&
-          (!page.profile || page.profile === expectedProfile)
-
-        const pageMessages = pageMatchesBinding ? page.messages : []
-
-        const tail = pageMessages.length
+        const tail = page?.messages.length
           ? await extendRefreshPageToOverlap(
-              toChatMessages(pageMessages), baseline, olderPageReader(storedSessionId, restScope, page)
+              toChatMessages(page.messages), baseline, olderPageReader(storedSessionId, restScope, page)
             )
           : []
 

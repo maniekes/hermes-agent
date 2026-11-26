@@ -533,7 +533,7 @@ export const LATEST_SESSION_MESSAGES_LIMIT = 120
 export function getLatestSessionMessages(
   id: string,
   profile?: ProfileScope,
-  options: { passive?: boolean } = {}
+  options: { passive?: boolean; verifyResolvedSession?: boolean } = {}
 ): Promise<SessionMessagesResponse> {
   // Key pagination by the effective request owner, not the caller's spelling
   // (ambient, profile string, or explicit pin). Otherwise refreshes create
@@ -543,13 +543,20 @@ export function getLatestSessionMessages(
   // Only the lookup key is normalized — backfill replays `route` verbatim.
   const ambientConnectionId = route.connectionId || ambientOwnerConnectionId()
   const ambientProfile = getApiRequestProfile() || 'default'
+  const expectedProfile = route.profile || ambientProfile
+
+  const scopedRoute = options.verifyResolvedSession
+    ? { ...route, connectionId: route.connectionId, profile: expectedProfile }
+    : route
+
+  const readScope = options.verifyResolvedSession ? scopedRoute : profile
 
   // includeCompacted: durable display history must include rows preserved by
   // in-place compaction (active=0, compacted=1); without them the transcript
   // silently ends at the compaction boundary and earlier turns are unreachable.
   return getSessionMessages(
     id,
-    profile,
+    readScope,
     {
       limit: LATEST_SESSION_MESSAGES_LIMIT,
       order: 'latest',
@@ -557,6 +564,10 @@ export function getLatestSessionMessages(
     },
     options
   ).then(async page => {
+    if (options.verifyResolvedSession && page.profile && page.profile !== expectedProfile) {
+      throw new Error('Transcript page belongs to a different profile')
+    }
+
     // Order-echo guard. A backend built before the `order` param silently drops
     // it (FastAPI ignores unknown query params) and serves the OLDEST page
     // while still answering with a `pagination` object — so a full page looked
@@ -567,7 +578,25 @@ export function getLatestSessionMessages(
     // is the one paging contract both backend generations honour.
     const authoritativePage = pageHonorsLatestOrder(page)
       ? page
-      : await completeTranscriptForOrderlessBackend(id, profile, page, options)
+      : await completeTranscriptForOrderlessBackend(id, readScope, page, options)
+
+    // Canonical attach can bind the logical root while REST resolves a physical
+    // segment. The scoped timeline uses the same storage resolver as /messages
+    // and checks ownership of the exact requested and resolved rows.
+    if (options.verifyResolvedSession && authoritativePage.session_id !== id) {
+      const query = new URLSearchParams({ limit: '1', profile: expectedProfile })
+
+      const resolved = await hermesApi<Pick<SessionMessagesResponse, 'profile' | 'session_id'>>({
+        ...scopedRoute,
+        path: `/api/sessions/${encodeURIComponent(id)}/timeline?${query}`,
+        ...(options.passive ? { passive: true } : {})
+      })
+
+      if (!authoritativePage.session_id || resolved.session_id !== authoritativePage.session_id ||
+          resolved.profile !== expectedProfile) {
+        throw new Error('Transcript page does not match the resolved session')
+      }
+    }
 
     // Record whether the tail was truncated (page came back full) and where
     // the next older page starts, so "Show earlier" can backfill over REST
@@ -581,10 +610,10 @@ export function getLatestSessionMessages(
       profile: route.profile || page.profile || ambientProfile
     }
 
-    recordTranscriptTail(id, authoritativePage, route, owner)
+    recordTranscriptTail(id, authoritativePage, scopedRoute, owner)
 
     if (authoritativePage.session_id && authoritativePage.session_id !== id) {
-      recordTranscriptTail(authoritativePage.session_id, authoritativePage, route, owner)
+      recordTranscriptTail(authoritativePage.session_id, authoritativePage, scopedRoute, owner)
     }
 
     return authoritativePage
