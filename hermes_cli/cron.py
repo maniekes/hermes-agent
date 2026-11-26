@@ -349,10 +349,21 @@ def cron_runs(job_id: Optional[str] = None, limit: int = 20):
     if not records:
         print("No cron execution attempts recorded.")
         return
+    import sqlite3
+
+    from cron.conversation_reports import report_statuses
+
+    try:
+        report_states = report_statuses([record["id"] for record in records])
+    except (OSError, sqlite3.Error):
+        report_states = {}
+        print("Conversation report status is temporarily unavailable.")
     for record in records:
         print(f"{record.get('id', '?')}  {record.get('status', '?'):<9}  "
               f"job={record.get('job_id', '?')}  source={record.get('source', '?')}  "
               f"{record.get('claimed_at', '?')}")
+        if report_state := report_states.get(record.get("id")):
+            print(f"    Conversation report: {report_state}")
         if record.get("error"):
             print(f"    {record['error']}")
 
@@ -783,7 +794,7 @@ _JOB_ARG_FIELDS = (("name", "name"), ("deliver", "deliver"), ("failure_deliver",
                    ("continuity", "continuity"), ("reasoning_effort", "reasoning_effort"),
                    ("interpreter", "interpreter"), ("timezone", "timezone"),
                    ("grace_minutes", "grace_minutes"), ("catch_up", "catch_up"),
-                   ("wrap_response", "wrap_response"))
+                   ("wrap_response", "wrap_response"), ("target_session_id", "target_session_id"))
 
 
 def _job_api_kwargs(args) -> dict[str, Any]:
@@ -792,6 +803,7 @@ def _job_api_kwargs(args) -> dict[str, Any]:
 
 
 _JOB_DETAIL_LINES = (
+    ("target_session_id", "  Report conversation: {}"),
     ("script", "  Script: {}"),
     ("monitor_script", "  Monitor: {} (agent runs only on output change)"),
     ("monitor_url", "  Monitor: {} (agent runs only on output change)"),

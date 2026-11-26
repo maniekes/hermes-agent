@@ -48,14 +48,12 @@ def capture(execution_id, job, text, *, success):
     """Persist the report independently of the messaging delivery, once per run."""
     from agent.redact import redact_sensitive_text
     from cron.delivery_queue import _transaction
-    from cron.jobs import get_job
     from hermes_time import now
 
-    current = get_job(job["id"])
-    target = current and current.get("target_session_id")
+    target = job.get("target_session_id")
     if not target:
         return
-    revision = current.get("target_session_revision")
+    revision = job.get("target_session_revision")
     content = redact_sensitive_text(text.strip(), force=True, redact_url_credentials=True) if success else _FAILURE_REPORT
     with _transaction() as conn:
         conn.execute(
@@ -66,3 +64,53 @@ def capture(execution_id, job, text, *, success):
             (execution_id, job["id"], target, revision, content if revision else "",
              now().isoformat(), "pending" if revision else "undelivered"),
         )
+
+
+def drain(home):
+    """Advance bounded, independent report receipts on the existing cron delivery tick."""
+    from time import monotonic, time
+
+    from cron.delivery_queue import _transaction
+    from gateway.session_cron import deliver_to_local_chat
+
+    with _transaction() as conn:
+        pending = [dict(row) for row in conn.execute(
+            """SELECT * FROM conversation_reports WHERE status='pending' AND next_at<=?
+               ORDER BY next_at, created_at, execution_id LIMIT 16""", (time(),))]
+    deadline = monotonic() + 5
+    processed = 0
+    for report in pending:
+        if monotonic() >= deadline:
+            break
+        processed += 1
+        try:
+            status = deliver_to_local_chat(home, report["target_session_id"], report["content"], report=report)
+        except (OSError, RuntimeError):
+            status = "pending"
+        with _transaction() as conn:
+            if status == "pending":
+                conn.execute("UPDATE conversation_reports SET next_at=? WHERE execution_id=? AND status='pending'",
+                             (time() + 15, report["execution_id"]))
+            else:
+                conn.execute("""UPDATE conversation_reports SET status=?, content=''
+                                WHERE execution_id=? AND status='pending'""", (status, report["execution_id"]))
+    return processed
+
+
+
+def report_statuses(execution_ids):
+    """Read the independent note dispositions without opening a writer."""
+    import sqlite3
+
+    from cron.delivery_queue import queue_path
+
+    path = queue_path()
+    if not execution_ids or not path.is_file():
+        return {}
+    with sqlite3.connect(path.as_uri() + "?mode=ro", uri=True) as conn:
+        if not conn.execute("SELECT 1 FROM sqlite_master WHERE name='conversation_reports'").fetchone():
+            return {}
+        placeholders = ",".join("?" for _ in execution_ids)
+        return dict(conn.execute(
+            f"SELECT execution_id, status FROM conversation_reports WHERE execution_id IN ({placeholders})",
+            tuple(execution_ids)))

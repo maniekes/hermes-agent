@@ -4,9 +4,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { isTargetSessionBusy } from '@/app/session/hooks/use-prompt-actions/utils'
 import type { ClientSessionState } from '@/app/types'
+import * as browserPush from '@/lib/browser-web-push'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { modelOptionsQueryKey } from '@/lib/model-options'
 import { setCurrentModel, setCurrentProvider } from '@/store/session'
+import { $focusedRuntimeId } from '@/store/session-states'
 
 import { type MessageStreamHarness, renderMessageStream } from './test-harness'
 import { PRE_TURN_LIVE_SETTLE_GRACE_MS } from './utils'
@@ -55,6 +57,37 @@ afterEach(() => {
   setCurrentProvider('')
   vi.useRealTimers()
   vi.restoreAllMocks()
+})
+
+describe('cron report notifications', () => {
+  it.each([true, false])('appends a committed report once and acknowledges only the focused document (%s)', visible => {
+    const acknowledge = vi.spyOn(browserPush, 'acknowledgeBrowserPush').mockImplementation(() => {})
+    vi.spyOn(window.document, 'hidden', 'get').mockReturnValue(!visible)
+    vi.spyOn(window.document, 'hasFocus').mockReturnValue(visible)
+    vi.spyOn($focusedRuntimeId, 'get').mockReturnValue(ACTIVE_SID)
+    mountStream()
+    sessionStates!.set(ACTIVE_SID, { ...createClientSessionState(), storedSessionId: 'target-chat' })
+    const report = { content: 'Synthetic report note', id: 'b'.repeat(32), row_id: 10, timestamp: 100 }
+    sessionInfo(ACTIVE_SID, { cron_report: report, stored_session_id: 'target-chat' })
+    expect(sessionStates!.get(ACTIVE_SID)!.messages.map(row => row.rowId)).toEqual([10])
+    expect(acknowledge).toHaveBeenCalledTimes(visible ? 1 : 0)
+
+    sessionInfo(ACTIVE_SID, { cron_report: report, stored_session_id: 'target-chat' })
+    sessionInfo(ACTIVE_SID, { cron_report: { ...report, row_id: 9 }, stored_session_id: 'target-chat' })
+    expect(sessionStates!.get(ACTIVE_SID)!.messages.map(row => row.rowId)).toEqual([10])
+  })
+
+  it('does not acknowledge a report on a different stored binding', () => {
+    const acknowledge = vi.spyOn(browserPush, 'acknowledgeBrowserPush').mockImplementation(() => {})
+    mountStream()
+    sessionStates!.set(ACTIVE_SID, { ...createClientSessionState(), storedSessionId: 'other-chat' })
+    sessionInfo(ACTIVE_SID, {
+      cron_report: { content: 'Synthetic report note', id: 'b'.repeat(32), row_id: 10, timestamp: 100 },
+      stored_session_id: 'target-chat'
+    })
+    expect(sessionStates!.get(ACTIVE_SID)!.messages).toEqual([])
+    expect(acknowledge).not.toHaveBeenCalled()
+  })
 })
 
 describe('session.info config refetch gating', () => {

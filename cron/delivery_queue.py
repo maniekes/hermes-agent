@@ -141,6 +141,7 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
              status TEXT NOT NULL CHECK(status IN ('pending', 'materialized', 'undelivered'))
            )"""
     )
+    add_column_if_missing(conn, "conversation_reports", "next_at", "next_at REAL NOT NULL DEFAULT 0")
     add_column_if_missing(
         conn, "deliveries", "for_failure",
         "for_failure INTEGER NOT NULL DEFAULT 0",

@@ -311,6 +311,11 @@ class WebPush:
         # An opt-out writes before joining this boundary. It either wins the fresh
         # read or waits for this reserved attempt before acknowledging.
         with self._dispatch, authority.db._read_ctx() as conn:
+            if dict(row).get("report_owner") is not None and (
+                    not browser_credential.is_current(row["login"])
+                    or self._grants(authority, row["device"]) != (
+                        (row["owner"], row["grant"], row["login"]), row["profile_grant"])):
+                return None
             allowed = store.dispatch_preview(conn, row)
             if allowed and preview is not None:
                 self._sending_preview = (authority.profile_id, row["device"])
@@ -322,6 +327,31 @@ class WebPush:
             return None
         return partial(store.bind, device=device, owner=owner, login=login, vapid=self.vapid_id,
                        grant=row["grant"], version=row["version"])
+
+    def report_installations(self, authority, owner):
+        """Snapshot verified bindings off the profile writer (control owns grants)."""
+        try:
+            login = browser_credential.generation()
+        except OSError:
+            return []
+        with authority.db._read_ctx() as conn:
+            rows = conn.execute(
+                "SELECT * FROM web_push_subscriptions WHERE authority_owner=? AND login=? AND vapid=?",
+                (owner, login, self.vapid_id)).fetchall()
+        return [dict(row) for row in rows if self.active(authority, row["device"], row["owner"], login)]
+
+    def enqueue_report(self, conn, session_id, note_id, event_id, owner, candidates):
+        from gateway.web_push.conversation import turn_alert_allowed
+
+        if not turn_alert_allowed(conn, session_id):
+            return
+        now = time.time()
+        for candidate in candidates:
+            row = store.subscription(conn, candidate["device"], candidate["owner"], candidate["login"],
+                                     self.vapid_id, candidate["grant"])
+            if (row is not None and row["authority_owner"] == owner and row["version"] == candidate["version"]
+                    and row["profile_grant"] == candidate["profile_grant"]):
+                store.enqueue_report(conn, session_id, note_id, event_id, owner, row, now)
 
     def test(self, authority, device, owner, login):
         row = self.active(authority, device, owner, login)

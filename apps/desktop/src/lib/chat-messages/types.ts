@@ -96,6 +96,7 @@ export type ChatMessage = {
 }
 
 export type GatewayEventPayload = {
+  cron_report?: { id: string; row_id: number; content: string; timestamp: number }
   web_push?: boolean
   outcome?: string
   response_ready_managed?: boolean

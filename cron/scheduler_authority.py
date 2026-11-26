@@ -65,11 +65,12 @@ def run_canonical_job(job, *, extra_prompt=None, cancel_event=None, execution_id
               'extra_prompt': extra_prompt}
     root = get_hermes_home() / 'cron' / 'admissions'
     journal = journal_path(params['job_id'], params['request_id'])
-    record = {'params': params, 'receipt': None}
+    record = {'params': params, 'receipt': None, 'conversation_reports_v1': True}
     if journal.exists():
         record = json.loads(journal.read_text(encoding='utf-8-sig'))
         if record['params'] != params:
             raise CronExecutionUnknown('cron admission identity conflict')
+    job['_skip_conversation_report_capture'] = not record.get('conversation_reports_v1')
     attempted = journal.exists()
     owner = owner_for_home(get_hermes_home())
 
@@ -221,6 +222,7 @@ def reconcile_pending(*, allow_connect=True):
             job = dict(state['job'], **(state.get('job_flags') or {}))
             job['execution_id'] = params['request_id']
             job['_conversation_report_outcome'] = state.get('outcome')
+            job['_skip_conversation_report_capture'] = not record.get('conversation_reports_v1')
             # The same result verdicts as the ordinary tail: an agent-declared [CRON_FAILURE] and a
             # blank answer are failures, whichever process books them.
             success, error, declared = _apply_agent_failure_marker(job, success, error, answer)

@@ -465,7 +465,7 @@ class SessionAuthority:
         return PendingAdmission(**vars(self._receipt(row)), input_id=row['request_id'], text=text,
                                 controls=queued_controls(self, row), steering=row['outcome'] == STEERING)
 
-    def _publish_pending(self, ref):
+    def _publish_pending(self, ref, *, cron_report=None):
         from gateway.session_retirement import restore_retired
         restore_retired(self, ref.session_id)  # input committed after its conversation retired
         live = self.sessions[ref.session_id]
@@ -482,6 +482,7 @@ class SessionAuthority:
                 'running': handle.execution_state == 'running',
                 'execution_generation': handle.execution_generation,
                 'revision': handle.revision,
+                **({'cron_report': cron_report} if cron_report else {}),
             }, event_type='session.info')
         from gateway.session_bot_mailbox import wake_bot_receipts
         wake_bot_receipts(self, ref.session_id)
@@ -1112,6 +1113,14 @@ class SessionAuthority:
             if any(row['status'] == 'unknown' for row in pending):
                 raise RuntimeStoreError('unknown_execution')
             first = next((row for row in pending if row['status'] == 'queued'), None)
+            from gateway.session_cron_reports import claim_report, report_payload
+            if report_payload(first) is not None:
+                if self._classic_turn_holds(live.route):
+                    return 'classic_busy', first
+                from gateway.session_runtime_workers import tracked_write
+                live.rescan = False
+                row = await tracked_write(self, partial(claim_report, self, ref, first))
+                return (False if row is None and live.rescan else row), first
             from gateway.config import Platform
             if live.source.platform == Platform.LOCAL:
                 # A reasoning command or a model pick made while the previous turn ran lands here, at the
@@ -1373,6 +1382,16 @@ class SessionAuthority:
                 from gateway.session_retirement import retire_at_idle
                 retire_at_idle(self, ref, live)
                 return
+            if row['status'] == 'terminal':
+                from gateway.session_cron_reports import report_payload
+                report = report_payload(row)
+                if report is not None:
+                    if row['outcome'] == 'completed':
+                        refresh = getattr(self.runner, '_refresh_agent_cache_message_count', None)
+                        if refresh is not None:
+                            await refresh(live.route, self.physical_target(ref))
+                    self._publish_pending(ref, cron_report=row.get('cron_report'))
+                    continue
             admission_id = row['admission_id']
             from gateway.run_plugin_injection import admission_turn_scope
             try:

@@ -736,6 +736,7 @@ def _action_create(a: dict[str, Any]) -> str:
             pinned=bool(a["pinned"]),
             failure_deliver=_resolve_cron_context_deliver(_normalize_deliver_param(a["failure_deliver"])),
             catch_up=a["catch_up"], wrap_response=_wrap_response_override(a["wrap_response"]),
+            target_session_id=a["target_session_id"],
             **({"paused": a["paused"], "paused_reason": a["paused_reason"]}
                if a["paused"] is not False or a["paused_reason"] is not None else {}))
     except CronSchedulerRegistrationError as exc:
@@ -1011,6 +1012,8 @@ def _action_update(job: dict[str, Any], a: dict[str, Any]) -> str:
         error = step(job, a, updates)
         if error:
             return tool_error(error, success=False)
+    if a["target_session_id"] is not None:
+        updates["target_session_id"] = a["target_session_id"]
     if not updates:
         return tool_error("No updates provided.", success=False)
     updated = update_job(job["id"], updates)
@@ -1094,7 +1097,8 @@ def cronjob(
     pinned: Optional[bool] = None,
     interpreter: Optional[str] = None,
     timezone: Optional[str] = None,
-    grace_minutes: Optional[int | str] = None) -> str:
+    grace_minutes: Optional[int | str] = None,
+    target_session_id: Optional[str] = None) -> str:
     """Unified cron job management tool."""
     a = dict(locals())
     try:

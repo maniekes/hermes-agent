@@ -60,11 +60,22 @@ async def _admit_local_delivery(authority, chat_id, text, metadata):
         return await admit_route_wake(authority.runner, adapter, source, text, 'cron', metadata)
 
 
-def deliver_to_local_chat(home, chat_id, text, *, diagnostic=False):
+def deliver_to_local_chat(home, chat_id, text, *, diagnostic=False, report=None):
     """Admit a cron result into local chat *chat_id*'s FIFO; at the head it is written into the chat's
     history as a note, never a turn (``session_completion_notes``). A local chat has no push transport
     (``LocalSessionAdapter.send`` only acknowledges a turn's own output), so only the owner in this
     process can deliver. Called off the owner loop; None once admitted, else the error."""
+    if report is not None:
+        owner = owner_for_home(home)
+        if owner is None:
+            return 'pending'
+        authority, loop = owner
+        from gateway.session_cron_reports import admit_report
+        try:
+            return asyncio.run_coroutine_threadsafe(admit_report(authority, report), loop).result(timeout=5)
+        except (RuntimeStoreError, OSError, TimeoutError):
+            return 'pending'
+
     owner = owner_for_home(home)
     if owner is None:
         return f"local chat {chat_id}: no gateway in this process owns its session"

@@ -11,6 +11,7 @@ import errno
 import json
 import logging
 import os
+import sqlite3
 import re
 import subprocess
 import sys
@@ -1378,7 +1379,10 @@ def drain_delivery_queue(adapters, loop) -> int:
             _mark_incident_alerted(queued_job.get("_failure_incident_id"))
         return error
 
-    return drain(send)
+    from cron.conversation_reports import drain as drain_reports
+
+    delivered = drain(send)
+    return delivered + drain_reports(_get_hermes_home())
 
 
 _DEFAULT_SCRIPT_TIMEOUT = 3600  # seconds (1 hour)
@@ -3058,11 +3062,14 @@ class _RunDelivery:
 def _capture_conversation_report(delivery, fence, answer, execution_token):
     job = delivery.job
     execution_id = job.get('execution_id')
-    if not execution_id or not job.get("target_session_id"):
+    if not execution_id or job.get('_skip_conversation_report_capture'):
         return
     if _is_interrupted(job["id"], execution_token) or fence.operator_cancelled():
         return
-    if job.get('_conversation_report_outcome') in {'cancelled', 'interrupted', 'unknown'}:
+    terminal = job.get('_conversation_report_outcome')
+    if terminal in {'cancelled', 'interrupted', 'unknown'} or (
+            terminal is None and not delivery.success
+            and delivery.error in {'cancelled', 'interrupted', 'unknown_execution'}):
         return
     if delivery.success and (not answer.strip() or _is_cron_silence_response(answer)):
         return
@@ -3070,12 +3077,22 @@ def _capture_conversation_report(delivery, fence, answer, execution_token):
         from cron.unreachable_retry import will_retry
         if will_retry(job):
             return
+    from cron.jobs import get_job
+
+    current = get_job(job["id"])
+    if not current or not current.get("target_session_id"):
+        return
     from cron.conversation_reports import capture
 
     with fence.side_effect_fence() as owns_result:
         if not owns_result:
             raise _FireClaimLostDuringSideEffect
-        capture(execution_id, job, answer, success=delivery.success)
+        try:
+            capture(execution_id, current, answer, success=delivery.success)
+        except (OSError, sqlite3.Error):
+            # No durable report exists yet. Do not turn a note-lane fault into
+            # a different run outcome or a failure notice on the messaging lane.
+            logger.warning("Cron conversation report could not be prepared for run %s", execution_id)
 
 
 def _save_compose_deliver(

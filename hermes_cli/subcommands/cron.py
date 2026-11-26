@@ -65,6 +65,7 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
             "--deliver). 'local' suppresses failure notices entirely; run "
             "state stays visible in `hermes cron list`. Omit = failures "
             "follow --deliver.")
+    cron_create.add_argument("--target-session-id", help="Append final reports to this conversation in the current profile.")
     cron_create.add_argument("--repeat", type=int, help="Optional repeat count")
     _add_catch_up(cron_create)
     _add_wrap_response(cron_create)
@@ -138,6 +139,10 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
     cron_edit.add_argument("--prompt", help="New prompt/task instruction")
     cron_edit.add_argument("--name", help="New job name")
     cron_edit.add_argument("--deliver", help="New delivery target")
+    report_target = cron_edit.add_mutually_exclusive_group()
+    report_target.add_argument("--target-session-id", help="Set the conversation for newly prepared reports.")
+    report_target.add_argument("--clear-target-session", dest="target_session_id", action="store_const", const="",
+                               help="Stop preparing new reports for a conversation.")
     cron_edit.add_argument("--failure-deliver", dest="failure_deliver",
         help="Override target for failure notices (same grammar as --deliver; "
             "'local' suppresses; '' clears the override)")

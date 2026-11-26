@@ -1,7 +1,9 @@
-import { mergeUsage, usageFromTick } from '@hermes/shared'
+import { LOCAL_CONNECTION_ID, mergeUsage, usageFromTick } from '@hermes/shared'
 
-import { finalizeInterruptedMessages } from '@/lib/chat-messages'
+import { acknowledgeBrowserPush } from '@/lib/browser-web-push'
+import { finalizeInterruptedMessages, toChatMessages } from '@/lib/chat-messages'
 import { normalizePersonalityValue } from '@/lib/chat-runtime'
+import { composerFocusBlockedBySurface } from '@/lib/keybinds/composer-focus-keys'
 import { modelOptionsQueryKey } from '@/lib/model-options'
 import { reconcileApprovalModeForProfile } from '@/store/approval-mode'
 import { clearSettledClarifyRequest } from '@/store/clarify'
@@ -32,6 +34,7 @@ import {
   setWorkspaceCwdOwner,
   setYoloActive
 } from '@/store/session'
+import { $focusedRuntimeId } from '@/store/session-states'
 import { reportInstallMethodWarning } from '@/store/updates'
 
 import {
@@ -154,6 +157,66 @@ function reconcileSessionInfoPendingSubmissions(ctx: GatewayEventContext): void 
 }
 
 /** session.info / session.usage / session.title. */
+function applyCronReport(ctx: GatewayEventContext): void {
+  const { deps, event, payload, sessionId } = ctx
+  const report = payload?.cron_report
+  const storedId = payload?.stored_session_id
+
+  if (
+    !report || !sessionId || !storedId || !deps.sessionStateByRuntimeIdRef.current.has(sessionId) ||
+    typeof report.id !== 'string' || !/^[a-f0-9]{32}$/.test(report.id) ||
+    typeof report.content !== 'string' || !Number.isSafeInteger(report.row_id) ||
+    report.row_id <= 0 || !Number.isFinite(report.timestamp)
+  ) {
+    return
+  }
+
+  const [note] = toChatMessages([{
+    content: report.content,
+    display_kind: 'internal_notification',
+    role: 'user',
+    row_id: report.row_id,
+    timestamp: report.timestamp
+  }])
+
+  if (!note) {
+    return
+  }
+
+  let present = false
+
+  deps.updateSessionState(sessionId, state => {
+    // This is an additive durable row on the existing binding. A delayed replay
+    // cannot append it past a newer durable row or across a replacement pane.
+    if (state.storedSessionId !== storedId) {
+      return state
+    }
+
+    if (state.messages.some(message => message.rowId === report.row_id)) {
+      present = true
+
+      return state
+    }
+
+    if (state.busy || state.awaitingResponse ||
+        state.messages.some(message => message.rowId !== undefined && message.rowId > report.row_id)) {
+      return state
+    }
+
+    present = true
+
+    return { ...state, messages: [...state.messages, note] }
+  })
+
+  if (
+    present && (!event.connectionId || event.connectionId === LOCAL_CONNECTION_ID) &&
+    ctx.fromActiveSource() && !document.hidden && document.hasFocus() &&
+    $focusedRuntimeId.get() === sessionId && !composerFocusBlockedBySurface()
+  ) {
+    acknowledgeBrowserPush(report.id, event.profile)
+  }
+}
+
 export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
   const { deps, event, payload, sessionId, explicitSid, isActiveEvent, occurredAt, fromActiveSource } = ctx
 
@@ -177,6 +240,7 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
     const rebound = maybeRebindPaneToRebuiltRuntime(ctx)
 
     reconcileSessionInfoPendingSubmissions(ctx)
+    applyCronReport(ctx)
 
     // Apply session-scoped fields when the event targets the active
     // session, OR when it's a global broadcast and we have no session.

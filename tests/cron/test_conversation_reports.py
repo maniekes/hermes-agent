@@ -42,6 +42,7 @@ def test_finished_report_is_retained_independently_of_delivery(tmp_path, monkeyp
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     db = SessionDB(tmp_path / "state.db")
     db.create_session("own_chat", source="desktop")
+    db.create_session("new_chat", source="desktop")
     db.close()
     delivery_path = tmp_path / "deliveries.db"
     monkeypatch.setattr(delivery_queue, "DELIVERY_DB", delivery_path)
@@ -73,6 +74,12 @@ def test_finished_report_is_retained_independently_of_delivery(tmp_path, monkeyp
         assert all(row[1] == "own_chat" and row[3] == "pending" for row in reports)
         assert any(row[0] == success and row[2] == "Synthetic material report" for row in reports)
         assert all("PRIVATE-FAILURE-CANARY" not in row[2] for row in reports)
+        jobs.update_job(agent["id"], {"target_session_id": "new_chat"})
+        # The run still carries its start snapshot. Capture uses the current target.
+        later = finish(agent, True, "A later material result")
+        with sqlite3.connect(delivery_path) as conn:
+            assert conn.execute("SELECT target_session_id FROM conversation_reports WHERE execution_id=?",
+                                (later,)).fetchone() == ("new_chat",)
 
 
 def test_fifo_note_and_outbox_rollback_before_commit_and_recover_after_restart(tmp_path):
@@ -132,3 +139,32 @@ def test_fifo_note_and_outbox_rollback_before_commit_and_recover_after_restart(t
     with sqlite3.connect(path) as conn:
         assert conn.execute("SELECT COUNT(*) FROM messages WHERE content='Report marker'").fetchone()[0] == 1
         assert conn.execute("SELECT COUNT(*) FROM web_push_outbox WHERE id='report-event'").fetchone()[0] == 1
+
+
+def test_reconciling_a_pre_d2_run_does_not_backfill_a_report(tmp_path, monkeypatch):
+    import json
+
+    from cron import conversation_reports, delivery_queue, executions, scheduler_authority
+    from tests.cron.test_canonical_receipt_bookkeeping import peer
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(delivery_queue, "DELIVERY_DB", tmp_path / "deliveries.db")
+    with SessionDB(tmp_path / "state.db") as db:
+        db.create_session("own_chat", source="desktop")
+    with jobs.use_cron_store(tmp_path):
+        job = jobs.create_job("Check releases", "every 1h", deliver="local", target_session_id="own_chat")
+        run = executions.create_execution(job["id"], source="test")["id"]
+        executions.mark_execution_running(run)
+        with executions._transaction() as conn:
+            conn.execute("UPDATE executions SET process_id=?,pid=? WHERE id=?", ("old-owner", 999999, run))
+        journal = scheduler_authority.journal_path(job["id"], run)
+        journal.parent.mkdir(parents=True, exist_ok=True)
+        journal.write_text(json.dumps({
+            "params": {"job_id": job["id"], "request_id": run, "extra_prompt": None},
+            "receipt": None,
+        }))
+        peer(monkeypatch, lambda method, params: {
+            "status": "terminal", "job": job, "result": [True, "document", "historical answer", None]})
+        scheduler_authority.reconcile_pending()
+        assert executions.get_execution(run)["status"] == "completed"
+        assert conversation_reports.report_statuses([run]) == {}

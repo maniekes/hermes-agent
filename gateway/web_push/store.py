@@ -1,4 +1,5 @@
 """Profile database state. The admission and settlement callers own their transactions."""
+from hashlib import sha256
 import time
 from uuid import uuid4
 
@@ -43,6 +44,13 @@ CREATE TABLE IF NOT EXISTS web_push_outbox (
 );
 CREATE INDEX IF NOT EXISTS web_push_outbox_due ON web_push_outbox(due_at) WHERE due_at IS NOT NULL;
 CREATE INDEX IF NOT EXISTS web_push_outbox_device ON web_push_outbox(device, version);
+CREATE TABLE IF NOT EXISTS web_push_cron_reports (
+    delivery_id TEXT PRIMARY KEY REFERENCES web_push_outbox(id) ON DELETE CASCADE,
+    report_id TEXT NOT NULL,
+    note_id INTEGER NOT NULL,
+    authority_owner TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS web_push_cron_report_id ON web_push_cron_reports(report_id);
 """
 GRACE_SECONDS = 3
 TTL_SECONDS = 3600
@@ -190,6 +198,16 @@ def settled(conn, row, outcome):
         (row["target_session_id"], now + GRACE_SECONDS, now + TTL_SECONDS, row["admission_id"]))
 
 
+
+def enqueue_report(conn, session_id, note_id, event_id, owner, row, now):
+    delivery_id = sha256(f'{event_id}:{row["device"]}:{row["version"]}'.encode()).hexdigest()[:32]
+    conn.execute(
+        """INSERT INTO web_push_outbox(id,device,version,session_id,due_at,expires_at)
+           VALUES (?,?,?,?,?,?)""",
+        (delivery_id, row["device"], row["version"], session_id, now + GRACE_SECONDS, now + TTL_SECONDS))
+    conn.execute("INSERT INTO web_push_cron_reports VALUES (?,?,?,?)", (delivery_id, event_id, note_id, owner))
+
+
 def test_delivery(conn, device, owner, login, vapid, now, *, grant=0, version=None):
     row = subscription(conn, device, owner, login, vapid, grant)
     if row is None or (version is not None and row["version"] != version):
@@ -208,10 +226,13 @@ def test_delivery(conn, device, owner, login, vapid, now, *, grant=0, version=No
 def seen(conn, event_id, device, owner, login):
     return conn.execute(
         """UPDATE web_push_outbox SET due_at=NULL
-           WHERE id=? AND device=? AND session_id IS NOT NULL AND attempts=0 AND due_at>?
+           WHERE (id=? OR id IN (SELECT delivery_id FROM web_push_cron_reports WHERE report_id=?))
+           AND device=? AND session_id IS NOT NULL AND attempts=0 AND due_at>?
            AND EXISTS (SELECT 1 FROM web_push_subscriptions s
-                       WHERE s.device=? AND s.version=web_push_outbox.version AND s.owner=? AND s.login=?)""",
-        (event_id, device, time.time(), device, owner, login)).rowcount == 1
+                       WHERE s.device=? AND s.version=web_push_outbox.version AND s.owner=? AND s.login=?
+                       AND NOT EXISTS (SELECT 1 FROM web_push_cron_reports r WHERE r.delivery_id=web_push_outbox.id
+                                       AND r.authority_owner IS NOT s.authority_owner))""",
+        (event_id, event_id, device, time.time(), device, owner, login)).rowcount == 1
 
 
 def click_target(conn, row, event_id, session_id, now):
@@ -225,7 +246,9 @@ def click_target(conn, row, event_id, session_id, now):
 
 def next_delivery(conn, now):
     return conn.execute(
-        """SELECT q.*, s.sealed, s.login, s.vapid, s.owner, s.grant, s.profile_grant FROM web_push_outbox q
+        """SELECT q.*, s.sealed, s.login, s.vapid, s.owner, s.grant, s.profile_grant,
+                  r.note_id, r.authority_owner AS report_owner FROM web_push_outbox q
+           LEFT JOIN web_push_cron_reports r ON r.delivery_id=q.id
            JOIN web_push_subscriptions s ON s.device=q.device AND s.version=q.version
            WHERE q.due_at<=? AND q.expires_at>? ORDER BY q.due_at LIMIT 1""", (now, now)).fetchone()
 
@@ -250,6 +273,7 @@ def prune(conn, now):
            (expires_at IS NULL AND NOT EXISTS (
                SELECT 1 FROM session_admissions a WHERE a.admission_id=web_push_outbox.id
                AND a.status IN ('queued','started','unknown')))""", (now,))
+    conn.execute("DELETE FROM web_push_cron_reports WHERE delivery_id NOT IN (SELECT id FROM web_push_outbox)")
 
 
 def dispatch_preview(conn, row):
@@ -259,13 +283,24 @@ def dispatch_preview(conn, row):
     current = conn.execute(
         """SELECT s.preview FROM web_push_outbox q JOIN web_push_subscriptions s
            ON q.device=s.device AND q.version=s.version
-           WHERE q.id=? AND q.version=? AND q.due_at IS NOT NULL""",
+           WHERE q.id=? AND q.version=? AND q.due_at IS NOT NULL
+           AND NOT EXISTS (SELECT 1 FROM web_push_cron_reports r WHERE r.delivery_id=q.id
+                           AND r.authority_owner IS NOT s.authority_owner)""",
         (row["id"], row["version"])).fetchone()
     return bool(current["preview"]) if current is not None else None
 
 
 def preview_source(conn, row):
     from hermes_state_terminal import RESULT_PREFIX
+
+    if dict(row).get("note_id") is not None:
+        return conn.execute(
+            """SELECT substr(s.title,1,?) AS title, substr(m.content,1,?) AS answer
+               FROM sessions s JOIN messages m ON m.id=?
+               WHERE s.id=? AND json_extract(m.display_metadata,'$.cron_report')=
+                 (SELECT report_id FROM web_push_cron_reports WHERE delivery_id=?)""",
+            (PREVIEW_TITLE_SOURCE_LIMIT + 1, PREVIEW_ANSWER_SOURCE_LIMIT + 1,
+             row["note_id"], row["session_id"], row["id"])).fetchone()
 
     # A failed turn's stored result can contain provider errors even in final_response.
     # Build its preview from the exact terminal receipt and fixed user-facing copy.
