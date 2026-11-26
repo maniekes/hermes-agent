@@ -20,7 +20,9 @@ import { consumeBrowserPushLink, refreshExistingBrowserPushWorker } from '@/lib/
 import { announceWebappWindow, createBrowserWindowOpener, sessionWindowTarget } from '@/lib/browser-window'
 import { createBrowserZoom } from '@/lib/browser-zoom'
 import { failDesktopBoot } from '@/store/boot'
+import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import { $connection } from '@/store/session'
+import { $pushThreadArrival, requestPushThreadEnd } from '@/store/session-open-intent'
 import { windowProfileOverride } from '@/store/windows'
 
 import { resolveGatewayVersion } from '../../electron/gateway-version'
@@ -61,12 +63,26 @@ export function installBrowserDesktopBridge(): boolean {
     refreshVisiblePushWorker()
     document.addEventListener('visibilitychange', refreshVisiblePushWorker)
     window.addEventListener('online', refreshVisiblePushWorker)
+    $activeGatewayProfile.listen(profile => {
+      const arrival = $pushThreadArrival.get()
+
+      if (arrival && arrival.profile !== normalizeProfileKey(profile)) {
+        $pushThreadArrival.set(null)
+      }
+    })
+    $connection.listen(connection => {
+      // The browser's own gateway reports mode "remote" under the local registry ID.
+      if (connection?.connectionId && connection.connectionId !== LOCAL_CONNECTION_ID) {
+        $pushThreadArrival.set(null)
+      }
+    })
   }
 
   const pushLink = consumeBrowserPushLink(new URL(window.location.href))
 
   if (pushLink) {
     window.history.replaceState(window.history.state, '', pushLink)
+    requestPushThreadEnd(pushLink.hash.slice(2), normalizeProfileKey(pushLink.searchParams.get('profile')), true)
   }
 
   // A gated host's opener waits for this window to say it booted (createBrowserWindowOpener).

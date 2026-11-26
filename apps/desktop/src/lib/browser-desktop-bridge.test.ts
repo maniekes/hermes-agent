@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { reconnectMovedCloudAgent } from '@/app/settings/cloud-team-change'
+import { $activeGatewayProfile } from '@/store/profile'
 import { $connection } from '@/store/session'
+import { $pushThreadArrival, requestPushThreadEnd } from '@/store/session-open-intent'
 import { clearWebappSession, seedWebappSession } from '@/test/webapp-session'
 import { browserOpensWebappWindows } from '@/test/webapp-windows'
 
@@ -38,6 +40,8 @@ afterEach(() => {
   document.documentElement.removeAttribute('data-hermes-desktop-host')
   Reflect.deleteProperty(navigator, 'clipboard')
   window.history.replaceState(null, '', '/#/')
+  $pushThreadArrival.set(null)
+  $activeGatewayProfile.set('default')
   $connection.set(null)
   vi.unstubAllGlobals()
   vi.restoreAllMocks()
@@ -82,6 +86,24 @@ function existingPushWorker() {
 }
 
 describe('browser-hosted Desktop bridge', () => {
+  it('expires an unconsumed push arrival when the gateway profile or connection changes', () => {
+    existingPushWorker()
+    window.history.replaceState(null, '', '/?profile=default&pushSession=alpha')
+    expect(installBrowserDesktopBridge()).toBe(true)
+    expect($pushThreadArrival.get()?.sessionKey).toBe('alpha')
+
+    $activeGatewayProfile.set('other')
+    $activeGatewayProfile.set('default')
+    expect($pushThreadArrival.get()).toBeNull()
+
+    requestPushThreadEnd('alpha', 'default')
+    $connection.set({ connectionId: 'local', mode: 'remote' } as never)
+    expect($pushThreadArrival.get()?.sessionKey).toBe('alpha')
+    $connection.set({ connectionId: 'relay', mode: 'remote' } as never)
+    $connection.set(null)
+    expect($pushThreadArrival.get()).toBeNull()
+  })
+
   it('refreshes the enrolled worker on Webapp boot and only when returning to a visible page', async () => {
     const { registration, serviceWorker, setVisibility } = existingPushWorker()
 

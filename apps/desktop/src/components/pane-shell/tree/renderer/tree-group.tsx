@@ -348,7 +348,7 @@ function CompactZoneTabs({ activeId, belowControls, closeable, newTab, node, tab
             restoreTreePane(paneId)
           }
 
-          activateTreePane(node.id, paneId)
+          activateTreePane(node.id, paneId, 'tab-selection')
         }}
         tabActions={tabActions}
         tabs={tabs}
@@ -617,7 +617,7 @@ export function TreeGroup({
       restoreTreePane(paneId)
     }
 
-    activateTreePane(node.id, paneId)
+    activateTreePane(node.id, paneId, 'tab-selection')
   }
 
   // A pane whose store owns Close keeps the gesture even when the pane itself

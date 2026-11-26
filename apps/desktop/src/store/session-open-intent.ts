@@ -1,3 +1,5 @@
+import { atom } from 'nanostores'
+
 // Bumped when the person opens a chat in this window (sidebar row, ⌘K, a
 // notification, the session switcher: every door goes through openSession).
 // Route effects that select a chat on their own (the cold-start route resume,
@@ -18,8 +20,40 @@ export function currentUserSessionOpen(): number {
 
 export function noteUserSessionOpen(): void {
   userSessionOpenRevision += 1
+  $pushThreadArrival.set(null)
 }
 
 export function _resetUserSessionOpenForTests(): void {
   userSessionOpenRevision = LAUNCH_USER_SESSION_OPEN
+}
+
+interface PushThreadArrival {
+  coldStart: boolean
+  hash: string
+  profile: string
+  sessionKey: string
+}
+
+// One viewport instruction, owned by the navigation that opened the thread.
+export const $pushThreadArrival = atom<PushThreadArrival | null>(null)
+
+export function requestPushThreadEnd(sessionKey: string, profile: string, coldStart = false) {
+  $pushThreadArrival.set({
+    coldStart,
+    hash: window.location.hash,
+    profile,
+    sessionKey
+  })
+}
+
+export function currentPushThreadArrival(): PushThreadArrival | null {
+  const arrival = $pushThreadArrival.get()
+
+  if (arrival && arrival.hash !== window.location.hash) {
+    $pushThreadArrival.set(null)
+
+    return null
+  }
+
+  return arrival
 }
