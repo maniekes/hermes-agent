@@ -944,22 +944,6 @@ not required (and is ignored) for DMs.
 
 ### Silent suppression
 
-### Reports in an existing conversation
-
-Use `hermes cron create … --target-session-id <stored-id>` or
-`hermes cron edit <job> --target-session-id <stored-id>` to append final reports
-to a conversation in the current profile. An ordinary run still executes in its
-own session. A successful silent result produces no note. A terminal failure
-adds a short notice, with details in the cron run history. A configured messaging
-destination continues to work independently.
-
-`hermes cron edit <job> --clear-target-session` stops preparing new reports for
-the conversation. Once a report is durably prepared, it keeps its original
-target through retries. Editing or removing the job leaves that report pending.
-Deleting the conversation prevents a pending report from being written there.
-Web Push follows the conversation's notification policy and each verified
-installation's enrollment, preferences, and login.
-
 If the agent's final response contains `[SILENT]`, delivery is suppressed entirely. The output is still saved locally for audit (in `~/.hermes/cron/output/`), but no message is sent to the delivery target.
 
 This is useful for monitoring jobs that should only report when something is wrong:
@@ -970,6 +954,25 @@ Otherwise, report the issue.
 ```
 
 Failed jobs always deliver regardless of the `[SILENT]` marker — only successful runs can be silenced. For quiet monitoring jobs, prompt the agent to reply with only `[SILENT]` when there is nothing to report.
+
+### Reports in an existing conversation
+
+Use `hermes cron create … --target-session-id <stored-id>` or
+`hermes cron edit <job> --target-session-id <stored-id>` to append final reports
+to a conversation in the current profile. An ordinary run still executes in its
+own session. A successful silent result produces no note. A terminal failure
+adds a short notice, with details in the cron run history. A configured messaging
+destination continues to work independently.
+When the local origin is the same conversation, the run writes one report note
+and uses that note's Web Push policy. Other destinations still receive their
+configured delivery.
+
+`hermes cron edit <job> --clear-target-session` stops preparing new reports for
+the conversation. Once a report is durably prepared, it keeps its original
+target through retries. Editing or removing the job leaves that report pending.
+Deleting the conversation prevents a pending report from being written there.
+Web Push follows the conversation's notification policy and each verified
+installation's enrollment, preferences, and login.
 
 ### Declaring a failed run
 

@@ -19,6 +19,7 @@ import os
 import re
 import shlex
 import site
+import sqlite3
 import sys
 import signal
 import threading
@@ -4373,16 +4374,33 @@ def _housekeeping_checkpoint_prune() -> None:
     auto_prune_from_config()
 
 
+def _cron_report_homes(runner):
+    from gateway.session_authorities import serving_authorities
+    from gateway.session_cron import owner_for_home
+
+    for authority in serving_authorities(runner):
+        home = Path(authority.db.db_path).resolve().parent
+        owner = owner_for_home(home)
+        if owner is not None and owner[0] is authority:
+            yield home
+
+
 def _drain_restart_safe_cron_deliveries(adapters, loop, runner=None) -> None:
     """Drain each profile's worker queue through its matching live adapters. A credential-less satellite
     profile (no bot of its own) drains through the primary's adapters routed by its own profile routes."""
     from cron import scheduler as cron_scheduler
     from cron import scheduler_preflight as sched_preflight
+    from cron.conversation_reports import drain as drain_reports
 
     if runner is None:
         if adapters is not None:
             cron_scheduler.drain_delivery_queue(adapters, loop)
         return
+    for home in _cron_report_homes(runner):
+        try:
+            drain_reports(home)
+        except (OSError, sqlite3.Error):
+            logger.warning("Cron report drain deferred for a served profile", exc_info=True)
     for profile_name, profile_home in _handoff_watch_scopes(runner):
         profile_adapters = (adapters if profile_name is None
                             else getattr(runner, "_profile_adapters", {}).get(profile_name))
@@ -4454,7 +4472,10 @@ def _start_gateway_housekeeping(
     queue_watch = None
     if adapters is not None or runner is not None:
         def served_homes() -> list:
-            return [home for _name, home in _handoff_watch_scopes(runner)] if runner is not None else [None]
+            if runner is None:
+                return [None]
+            return list(dict.fromkeys([*(home for _name, home in _handoff_watch_scopes(runner)),
+                                       *_cron_report_homes(runner)]))
 
         queue_watch = DeliveryQueueWatch(
             served_homes, lambda: _drain_restart_safe_cron_deliveries(adapters, loop, runner))

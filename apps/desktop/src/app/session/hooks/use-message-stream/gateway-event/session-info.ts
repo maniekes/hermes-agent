@@ -10,6 +10,7 @@ import { clearSettledClarifyRequest } from '@/store/clarify'
 import { reconcileSessionCompacting } from '@/store/compaction'
 import { requestDesktopOnboardingForCredentialWarning } from '@/store/onboarding'
 import { pendingSnapshotFence, reconcilePendingSubmissions } from '@/store/pending-submissions'
+import { normalizeProfileKey } from '@/store/profile'
 import { followActiveSessionCwd } from '@/store/projects'
 import { clearAllPrompts } from '@/store/prompts'
 import {
@@ -20,7 +21,7 @@ import {
   $selectedStoredSessionId,
   $sessions,
   applySessionTitle,
-  sessionMatchesStoredId,
+  idsShareLineage,
   setActiveSessionId,
   setCurrentBranch,
   setCurrentCwdTransient,
@@ -82,15 +83,7 @@ function sessionInfoDescribesSelectedSession(storedSessionId: string | undefined
     return false
   }
 
-  if (infoStoredSessionId === selected) {
-    return true
-  }
-
-  // Either id may be the live tip or the lineage root, so ask whether ONE row
-  // answers to both rather than assuming which side rotated.
-  return $sessions
-    .get()
-    .some(session => sessionMatchesStoredId(session, infoStoredSessionId) && sessionMatchesStoredId(session, selected))
+  return idsShareLineage(infoStoredSessionId, selected, $sessions.get())
 }
 
 /**
@@ -188,7 +181,11 @@ function applyCronReport(ctx: GatewayEventContext): void {
   deps.updateSessionState(sessionId, state => {
     // This is an additive durable row on the existing binding. A delayed replay
     // cannot append it past a newer durable row or across a replacement pane.
-    if (state.storedSessionId !== storedId) {
+    const scopedLineages = $sessions.get().filter(row =>
+      (row.connection_id ?? LOCAL_CONNECTION_ID) === (event.connectionId ?? LOCAL_CONNECTION_ID) &&
+      (!event.profile || normalizeProfileKey(row.profile) === normalizeProfileKey(event.profile)))
+
+    if (!state.storedSessionId || !idsShareLineage(state.storedSessionId, storedId, scopedLineages)) {
       return state
     }
 

@@ -25,9 +25,11 @@ def _receipt(conn, event_id):
     return row[0] if row else None
 
 
-def _target(conn, authority, root, pinned):
+def checked_target(conn, profile_id, root, pinned):
     from gateway.owner_identity import host_owner_subject, same_owner
     from gateway.session_authorities import served_profile_name
+    from gateway.session_route_recovery import _messaging_platform, _row_source
+    from hermes_state_local import API_BINDING_PREFIX, POLICY_PREFIX
     from hermes_state_mutation_binding import authorize_history, same_history_owner
 
     chain = _canonical_chain(conn, root)
@@ -35,8 +37,17 @@ def _target(conn, authority, root, pinned):
         raise RuntimeStoreError("not_found")
     target = chain[-1]
     owner = host_owner_subject()
-    actor = SessionActor(owner, authority.profile_id, frozenset({"session:create"}), "cron-report")
-    profile = served_profile_name(authority.profile_id)
+    actor = SessionActor(owner, profile_id, frozenset({"session:create"}), "cron-report")
+    profile = served_profile_name(profile_id)
+    anchor = dict(conn.execute("SELECT * FROM sessions WHERE id=?", (root,)).fetchone())
+    binding = conn.execute(
+        "SELECT 1 FROM state_meta WHERE key IN (?,?) AND json_valid(value)",
+        (POLICY_PREFIX + root, API_BINDING_PREFIX + root)).fetchone()
+    platform = _messaging_platform(anchor["source"])
+    if not binding and not (anchor["session_key"] and platform and _row_source(anchor, platform, profile)):
+        # An unbound transcript is history. In particular, setting a cron
+        # target must not trigger the adoption reserved for a native owner.
+        raise RuntimeStoreError("session_read_only")
     for sid in {root, pinned, target}:
         row = conn.execute("SELECT * FROM sessions WHERE id=?", (sid,)).fetchone()
         if row["profile_name"] not in (None, "", profile):
@@ -54,7 +65,7 @@ async def admit_report(authority, report):
     from gateway.session_runtime_workers import tracked_write
 
     event_id = _identity(report)
-    with owner_scope(authority):
+    with owner_scope(authority, force_profile_scope=True):
         require_serving(authority)
         db = authority.db
         with db._read_ctx() as conn:
@@ -67,7 +78,7 @@ async def admit_report(authority, report):
         actor = SessionActor(host_owner_subject(), authority.profile_id, frozenset({"session:submit"}), "cron-report")
 
         def authorize(conn):
-            _target(conn, authority, root, pinned)
+            checked_target(conn, authority.profile_id, root, pinned)
 
         try:
             with db._read_ctx() as conn:
@@ -99,9 +110,9 @@ def claim_report(authority, ref, row):
     def materialize(conn, queued):
         event_id = descriptor["id"]
         try:
-            target = _target(conn, authority, ref.session_id, descriptor["pinned"])
+            target = checked_target(conn, authority.profile_id, ref.session_id, descriptor["pinned"])
         except RuntimeStoreError as exc:
-            if exc.reason not in {"not_found", "permission_denied", "profile_mismatch"}:
+            if exc.reason not in {"not_found", "permission_denied", "profile_mismatch", "session_read_only"}:
                 raise
             status, outcome = "undelivered", "rejected"
         else:

@@ -147,13 +147,13 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
     )
 
 
-def _connect() -> sqlite3.Connection:
+def _connect(home: Optional[Path] = None) -> sqlite3.Connection:
     # Late imports: a scheduler daemon that outlives an on-disk upgrade already has the OLD
     # ``hermes_cli.sqlite_util`` / ``cron.jobs`` cached, so new names must be resolved at call time,
     # not at import time (the guarantee cron/ledger.py used to carry, see e24c8499).
     from hermes_cli.sqlite_util import open_db
 
-    path = _path()
+    path = queue_path(home)
     conn = open_db(path, db_label="cron/deliveries.db", synchronous_full=True, initialize=_initialize_schema)
     try:
         path.chmod(0o600)
@@ -163,13 +163,13 @@ def _connect() -> sqlite3.Connection:
 
 
 @contextmanager
-def _transaction() -> Iterator[sqlite3.Connection]:
+def _transaction(home: Optional[Path] = None) -> Iterator[sqlite3.Connection]:
     # Pruning is done explicitly by the paths that create terminal
     # rows (_finish / recover_abandoned / _terminalize_wait_timeout);
     # read-only polls must not pay for a full-table UPDATE + COUNT.
     from hermes_cli.sqlite_util import transaction
 
-    with _lock, transaction(_connect()) as conn:
+    with _lock, transaction(_connect() if home is None else _connect(home)) as conn:
         yield conn
 
 

@@ -80,6 +80,14 @@ def _pre_dispatch_housekeeping(_sched, headless: bool) -> None:
         reconcile_pending(allow_connect=False)
     else:
         reconcile_pending()
+    # Desktop's standalone ticker has an owner but no messenger housekeeping.
+    import sqlite3
+    from cron.conversation_reports import drain as drain_reports
+    from hermes_constants import get_hermes_home
+    try:
+        drain_reports(get_hermes_home())
+    except (OSError, sqlite3.Error):
+        _sched.logger.warning("Cron conversation reports deferred", exc_info=True)
     # Upgrade drain for the retired CLI lane's records: never let it stop due jobs below.
     try:
         from cron.bot_chat_legacy import drain_legacy_pending

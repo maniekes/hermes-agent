@@ -1853,6 +1853,10 @@ def _deliver_result(
             reached += not room_error
             continue
         if target["platform"] == "local":
+            from cron.conversation_reports import same_local_target
+            if same_local_target(job.get("_conversation_report_target"), target["chat_id"]):
+                reached += 1
+                continue  # the D2 report owns the one note and its installation-specific alerts
             from gateway.session_cron import deliver_to_local_chat
             from hermes_constants import get_hermes_home
             local_error = deliver_to_local_chat(get_hermes_home(), target["chat_id"],

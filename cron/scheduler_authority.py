@@ -181,6 +181,11 @@ def reconcile_pending(*, allow_connect=True):
                 # Its firer (this process included) still owns the row and its tail: re-saving the
                 # output or re-marking the job on every tick would duplicate its side effects.
                 continue
+            if record.get('conversation_report_ready'):
+                from cron.conversation_reports import commit_ready
+                commit_ready(journal, record)
+            if record.get('conversation_report_only'):
+                continue
             row = get_execution(params['request_id'])
             if row is not None and row['job_id'] == params['job_id'] and row['status'] in FIRER_FINISHED_STATES:
                 # The firer booked this attempt's terminal outcome itself (ownership lost, shutdown
@@ -222,7 +227,9 @@ def reconcile_pending(*, allow_connect=True):
             job = dict(state['job'], **(state.get('job_flags') or {}))
             job['execution_id'] = params['request_id']
             job['_conversation_report_outcome'] = state.get('outcome')
-            job['_skip_conversation_report_capture'] = not record.get('conversation_reports_v1')
+            if report_target := record.get('conversation_report_target'):
+                job['_conversation_report_target'] = report_target
+            job['_skip_conversation_report_capture'] = bool(report_target) or not record.get('conversation_reports_v1')
             # The same result verdicts as the ordinary tail: an agent-declared [CRON_FAILURE] and a
             # blank answer are failures, whichever process books them.
             success, error, declared = _apply_agent_failure_marker(job, success, error, answer)

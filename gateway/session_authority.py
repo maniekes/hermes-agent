@@ -1389,7 +1389,9 @@ class SessionAuthority:
                     if row['outcome'] == 'completed':
                         refresh = getattr(self.runner, '_refresh_agent_cache_message_count', None)
                         if refresh is not None:
-                            await refresh(live.route, self.physical_target(ref))
+                            from gateway.session_authorities import owner_scope
+                            with owner_scope(self, force_profile_scope=True):
+                                await refresh(live.route, self.physical_target(ref))
                     self._publish_pending(ref, cron_report=row.get('cron_report'))
                     continue
             admission_id = row['admission_id']

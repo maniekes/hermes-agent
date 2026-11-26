@@ -6,6 +6,14 @@ from cron import jobs
 from hermes_state import SessionDB
 
 
+def _configured_chat(db, label):
+    """Fixtures for a durable messaging route, the real GUI receipt is exercised in Webapp tests."""
+    from gateway.owner_identity import host_owner_subject
+
+    db.create_session(label, source="telegram", user_id=host_owner_subject(),
+                      chat_id="fixture-chat", session_key="agent:main:telegram:dm:fixture-chat")
+
+
 def test_conversation_target_is_optional_and_profile_scoped(tmp_path, monkeypatch):
     home = tmp_path / "own"
     other_home = tmp_path / "other"
@@ -13,8 +21,8 @@ def test_conversation_target_is_optional_and_profile_scoped(tmp_path, monkeypatc
     own = SessionDB(home / "state.db")
     other = SessionDB(other_home / "state.db")
     try:
-        own.create_session("own_chat", source="desktop")
-        other.create_session("foreign_chat", source="desktop")
+        _configured_chat(own, "own_chat")
+        _configured_chat(other, "foreign_chat")
         with jobs.use_cron_store(home / "cron"):
             targeted = jobs.create_job("Look up changes", "every 1h", target_session_id="own_chat")
             untargeted = jobs.create_job("Check logs", "every 1h")
@@ -41,8 +49,8 @@ def test_finished_report_is_retained_independently_of_delivery(tmp_path, monkeyp
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     db = SessionDB(tmp_path / "state.db")
-    db.create_session("own_chat", source="desktop")
-    db.create_session("new_chat", source="desktop")
+    _configured_chat(db, "own_chat")
+    _configured_chat(db, "new_chat")
     db.close()
     delivery_path = tmp_path / "deliveries.db"
     monkeypatch.setattr(delivery_queue, "DELIVERY_DB", delivery_path)
@@ -150,7 +158,7 @@ def test_reconciling_a_pre_d2_run_does_not_backfill_a_report(tmp_path, monkeypat
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setattr(delivery_queue, "DELIVERY_DB", tmp_path / "deliveries.db")
     with SessionDB(tmp_path / "state.db") as db:
-        db.create_session("own_chat", source="desktop")
+        _configured_chat(db, "own_chat")
     with jobs.use_cron_store(tmp_path):
         job = jobs.create_job("Check releases", "every 1h", deliver="local", target_session_id="own_chat")
         run = executions.create_execution(job["id"], source="test")["id"]

@@ -320,7 +320,7 @@ async def async_owner_scope(authority):
         yield
 
 
-def owner_scope(authority, *, hydrate_secrets=False):
+def owner_scope(authority, *, hydrate_secrets=False, force_profile_scope=False):
     """Runtime scope of the profile that owns *authority* — under multiplex only.
 
     Owner-side handlers (RPC dispatch, cron submit, admitted execution) must read config, jobs
@@ -330,13 +330,16 @@ def owner_scope(authority, *, hydrate_secrets=False):
     launches that must never touch the profile YAML. Test peers with symbolic ids ('fixture')
     likewise keep the ambient scope.
 
+    A cron report already has an explicit registered owner even on a Webapp-only
+    profile. It requests that profile scope regardless of messenger configuration.
+
     A standalone gateway that already hosts a second home (a profile created over the wire froze
     the launch env and made unscoped secret reads fail closed) binds the launch profile's own scope
     instead: unbound, every launch-profile session.create raised UnscopedSecretError (#141623).
     """
     from contextlib import nullcontext
     runner = getattr(authority, 'runner', None)
-    if not getattr(getattr(runner, 'config', None), 'multiplex_profiles', False):
+    if not force_profile_scope and not getattr(getattr(runner, 'config', None), 'multiplex_profiles', False):
         from tui_gateway.launch_profile_policy import launch_profile_scope_if_multiplexed
         return launch_profile_scope_if_multiplexed()
     home = Path(str(authority.profile_id))

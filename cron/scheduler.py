@@ -1379,10 +1379,7 @@ def drain_delivery_queue(adapters, loop) -> int:
             _mark_incident_alerted(queued_job.get("_failure_incident_id"))
         return error
 
-    from cron.conversation_reports import drain as drain_reports
-
-    delivered = drain(send)
-    return delivered + drain_reports(_get_hermes_home())
+    return drain(send)
 
 
 _DEFAULT_SCRIPT_TIMEOUT = 3600  # seconds (1 hour)
@@ -3057,6 +3054,7 @@ class _RunDelivery:
     incident_acked: bool = False
     failure_incident_id: Optional[str] = None
     side_effect_ownership_lost: bool = False
+    report_pending: bool = False
 
 
 def _capture_conversation_report(delivery, fence, answer, execution_token):
@@ -3071,7 +3069,7 @@ def _capture_conversation_report(delivery, fence, answer, execution_token):
             terminal is None and not delivery.success
             and delivery.error in {'cancelled', 'interrupted', 'unknown_execution'}):
         return
-    if delivery.success and (not answer.strip() or _is_cron_silence_response(answer)):
+    if delivery.success and _is_cron_silence_response(answer):
         return
     if not delivery.success and job.get('_model_unreachable'):
         from cron.unreachable_retry import will_retry
@@ -3082,17 +3080,30 @@ def _capture_conversation_report(delivery, fence, answer, execution_token):
     current = get_job(job["id"])
     if not current or not current.get("target_session_id"):
         return
-    from cron.conversation_reports import capture
+    from cron.conversation_reports import capture, commit_ready, stage_for_capture
 
     with fence.side_effect_fence() as owns_result:
         if not owns_result:
             raise _FireClaimLostDuringSideEffect
+        material = delivery.success and bool((answer or "").strip())
         try:
-            capture(execution_id, current, answer, success=delivery.success)
+            journal, ready = stage_for_capture(execution_id, current, answer, success=material)
+        except OSError:
+            # A journal filesystem failure does not imply SQLite is unwritable.
+            try:
+                job["_conversation_report_target"] = capture(execution_id, current, answer, success=material)
+            except (OSError, sqlite3.Error):
+                logger.error("No durable cron report storage for run %s", execution_id)
+            return
+        try:
+            delivery.report_pending = True
+            # Suppress a duplicate local origin even if the first SQLite write is deferred.
+            job["_conversation_report_target"] = ready["conversation_report_ready"]["target_session_id"]
+            job["_conversation_report_target"] = commit_ready(journal, ready)
+            delivery.report_pending = False
         except (OSError, sqlite3.Error):
-            # No durable report exists yet. Do not turn a note-lane fault into
-            # a different run outcome or a failure notice on the messaging lane.
-            logger.warning("Cron conversation report could not be prepared for run %s", execution_id)
+            logger.warning("Cron conversation report capture deferred for run %s (journal=%s)",
+                           execution_id, delivery.report_pending)
 
 
 def _save_compose_deliver(
@@ -3334,6 +3345,7 @@ def _run_one_job_body(
     _fire_scope_tokens = None
     _terminal_scope_token = None
     _identity_token = None
+    running_job = False
     try:
         # get_secret() fails closed outside a scope; the ticker thread has none. Delivery adapters
         # resolve credentials, so the scope must span delivery too (reset in the outer finally) —
@@ -3390,8 +3402,10 @@ def _run_one_job_body(
             "execution_id": execution_id}
         if fence.cancel_event is not None:
             _run_kwargs["cancel_event"] = fence.cancel_event
+        running_job = True
         outcome = _run_job_unless_cancelled(
             run_job, job, _run_kwargs, _teardown_deferred, fence, execution_id, fire_owner)
+        running_job = False
         if outcome is None:  # an operator cancel stopped it and is already booked
             return True
         success, output, final_response, error = outcome
@@ -3493,6 +3507,13 @@ def _run_one_job_body(
             and not isinstance(e, _FireClaimLostDuringSideEffect)
             and not _fire_claim_ownership_lost()
         ):
+            if running_job:
+                failure = _RunDelivery(job, False, _err_text)
+                try:
+                    _capture_conversation_report(failure, fence, "", execution_token)
+                except _FireClaimLostDuringSideEffect:
+                    _record_fire_ownership_lost(job, fire_owner, execution_id)
+                    return True
             delivery_error, delivery_outcome = _deliver_crash_failure(
                 job, _err_text, adapters=adapters, loop=loop)
         try:

@@ -7,7 +7,7 @@ import type { ClientSessionState } from '@/app/types'
 import * as browserPush from '@/lib/browser-web-push'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { modelOptionsQueryKey } from '@/lib/model-options'
-import { setCurrentModel, setCurrentProvider } from '@/store/session'
+import { $sessions, setCurrentModel, setCurrentProvider } from '@/store/session'
 import { $focusedRuntimeId } from '@/store/session-states'
 
 import { type MessageStreamHarness, renderMessageStream } from './test-harness'
@@ -75,6 +75,28 @@ describe('cron report notifications', () => {
     sessionInfo(ACTIVE_SID, { cron_report: report, stored_session_id: 'target-chat' })
     sessionInfo(ACTIVE_SID, { cron_report: { ...report, row_id: 9 }, stored_session_id: 'target-chat' })
     expect(sessionStates!.get(ACTIVE_SID)!.messages.map(row => row.rowId)).toEqual([10])
+  })
+
+  it('applies and acknowledges the logical root report on a bound compressed tip', () => {
+    const acknowledge = vi.spyOn(browserPush, 'acknowledgeBrowserPush').mockImplementation(() => {})
+    vi.spyOn(window.document, 'hidden', 'get').mockReturnValue(false)
+    vi.spyOn(window.document, 'hasFocus').mockReturnValue(true)
+    vi.spyOn($focusedRuntimeId, 'get').mockReturnValue(ACTIVE_SID)
+    vi.spyOn($sessions, 'get').mockReturnValue([{
+      _lineage_ids: ['root', 'tip'],
+      _lineage_root_id: 'root',
+      id: 'tip',
+      profile: ACTIVE_PROFILE
+    } as never])
+    mountStream()
+    sessionStates!.set(ACTIVE_SID, { ...createClientSessionState(), storedSessionId: 'tip' })
+    const report = { content: 'Synthetic compressed report', id: 'd'.repeat(32), row_id: 42, timestamp: 100 }
+
+    sessionInfo(ACTIVE_SID, { cron_report: report, stored_session_id: 'root' })
+    sessionInfo(ACTIVE_SID, { cron_report: { ...report, row_id: 43 }, stored_session_id: 'foreign' })
+
+    expect(sessionStates!.get(ACTIVE_SID)!.messages.map(row => row.rowId)).toEqual([42])
+    expect(acknowledge).toHaveBeenCalledTimes(1)
   })
 
   it('does not acknowledge a report on a different stored binding', () => {
