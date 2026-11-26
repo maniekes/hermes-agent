@@ -1,4 +1,5 @@
 import { ThreadPrimitive, useAuiEvent, useAuiState } from '@assistant-ui/react'
+import { LOCAL_CONNECTION_ID } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import { atom } from 'nanostores'
 import {
@@ -17,12 +18,16 @@ import {
 } from 'react'
 import { type GetTargetScrollTop, useStickToBottom } from 'use-stick-to-bottom'
 
-import { useComposerSurfaceId } from '@/app/chat/composer/scope'
+import { useComposerScope, useComposerSurfaceId } from '@/app/chat/composer/scope'
 import { usePaneLifecycle, usePaneVisible } from '@/components/pane-shell/pane-visibility'
 import { useI18n } from '@/i18n'
 import { messagePaintWeight } from '@/lib/render-weight'
 import { cn } from '@/lib/utils'
+import { normalizeProfileKey } from '@/store/profile'
+import { $connection } from '@/store/session'
+import { currentUserSessionOpen } from '@/store/session-open-intent'
 import {
+  $pushThreadArrival,
   COMPOSER_CLEARANCE_SLOT,
   getThreadScrollPosition,
   onScrollToBottomRequest,
@@ -1295,6 +1300,68 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     scrollToBottomUnlessSelecting,
     sessionKey,
     stopScroll
+  ])
+
+  const pushArrival = useStore($pushThreadArrival)
+  const { connectionId, profile } = useComposerScope()
+  const activeConnectionId = useStore($connection)?.connectionId
+  const ownerConnectionId = connectionId ?? activeConnectionId
+  const ownerProfile = normalizeProfileKey(profile ?? scrollProfile)
+
+  useLayoutEffect(() => {
+    if (
+      !pushArrival ||
+      !paneVisible ||
+      pushArrival.sessionKey !== sessionKey ||
+      ownerConnectionId !== LOCAL_CONNECTION_ID ||
+      pushArrival.profile !== ownerProfile ||
+      $pushThreadArrival.get() !== pushArrival
+    ) {
+      return
+    }
+
+    // A sidebar open during hydration supersedes the earlier tap, including
+    // when that open selects the very same conversation.
+    if (pushArrival.openRevision !== currentUserSessionOpen()) {
+      $pushThreadArrival.set(null)
+
+      return
+    }
+
+    if (sessionLoading || !hasGroups) {
+      return
+    }
+
+    if (isHistorical) {
+      returnToLatest?.()
+
+      return
+    }
+
+    $pushThreadArrival.set(null)
+    const jump = jumpRestoreRef.current
+
+    if (jump) {
+      jump()
+
+      return
+    }
+
+    // A settled transcript can have dropped its restore callbacks already.
+    restoreFromBottomRef.current = null
+    liveScrollStateRef.current = THREAD_SCROLL_BOTTOM
+    void scrollToBottomUnlessSelecting('instant')
+  }, [
+    hasGroups,
+    isHistorical,
+    ownerConnectionId,
+    ownerProfile,
+    paneVisible,
+    pushArrival,
+    returnToLatest,
+    scrollToBottomUnlessSelecting,
+    sessionKey,
+    sessionLoading
   ])
 
   // The load phase of a switch: the route names a session whose transcript

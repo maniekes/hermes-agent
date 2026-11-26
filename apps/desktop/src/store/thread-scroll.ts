@@ -3,6 +3,7 @@ import { atom, type WritableAtom } from 'nanostores'
 import { activeConnectionScopeSuffix } from '@/lib/connection-scoped'
 import { readKey, writeKey } from '@/lib/storage'
 import { $activeProfile, normalizeProfileKey } from '@/store/profile'
+import { currentUserSessionOpen } from '@/store/session-open-intent'
 
 // "Is the thread parked at the bottom" is owned by use-stick-to-bottom inside
 // ThreadMessageList (the scroll container). That state lives only in that
@@ -275,6 +276,24 @@ const SCROLL_POS_KEY_BASE = 'hermes.desktop.threadScroll.v1'
 
 export function threadScrollStorageKey(profile = $activeProfile.get()): string {
   return `${SCROLL_POS_KEY_BASE}.profile.${encodeURIComponent(normalizeProfileKey(profile))}${activeConnectionScopeSuffix()}`
+}
+
+interface PushThreadArrival {
+  openRevision: number
+  profile: string
+  sessionKey: string
+}
+
+// A notification tap is a one-shot viewport instruction. Keep it in memory
+// across the pane mount/attach, leaving the normal reading position untouched.
+export const $pushThreadArrival = atom<PushThreadArrival | null>(null)
+
+export function requestPushThreadEnd(sessionKey: string, profile: string | null) {
+  $pushThreadArrival.set({
+    openRevision: currentUserSessionOpen(),
+    profile: normalizeProfileKey(profile),
+    sessionKey
+  })
 }
 
 // Bounded so a marathon runtime that touches hundreds of sessions doesn't grow

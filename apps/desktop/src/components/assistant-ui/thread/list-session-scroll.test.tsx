@@ -1,13 +1,18 @@
 import { AssistantRuntimeProvider, type ThreadMessage, useExternalStoreRuntime } from '@assistant-ui/react'
+import { LOCAL_CONNECTION_ID } from '@hermes/shared'
 import { act, render, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { ComposerScopeProvider, MAIN_COMPOSER_SCOPE } from '@/app/chat/composer/scope'
 import { PaneLifecycleContext, PaneVisibleContext } from '@/components/pane-shell/pane-visibility'
 import { rescopeConnectionScopedStores } from '@/lib/connection-scoped'
 import { keybindAction } from '@/lib/keybinds/actions'
 import { setActiveProfile } from '@/store/profile'
+import { _resetUserSessionOpenForTests, noteUserSessionOpen } from '@/store/session-open-intent'
 import {
+  $pushThreadArrival,
   getThreadScrollPosition,
+  requestPushThreadEnd,
   requestScrollToBottom,
   requestThreadPageScroll,
   saveThreadScrollPosition,
@@ -45,7 +50,9 @@ beforeEach(() => {
   scrollHeightValue = SCROLL_H
   window.localStorage.clear()
   setActiveProfile('default')
-  rescopeConnectionScopedStores(null)
+  rescopeConnectionScopedStores({ mode: 'local' })
+  _resetUserSessionOpenForTests()
+  $pushThreadArrival.set(null)
 })
 
 const VIEWPORT_SLOT = 'aui_thread-viewport'
@@ -90,6 +97,7 @@ function sessionMessages(key: string, turns = 1): ThreadMessage[] {
 
 interface ScrollHarnessProps {
   isRunning?: boolean
+  loading?: boolean
   messages: ThreadMessage[]
   sessionKey: string | null
   scrollProfile?: string
@@ -100,6 +108,7 @@ interface ScrollHarnessProps {
 
 function ScrollHarness({
   isRunning = false,
+  loading = false,
   messages,
   sessionKey,
   scrollProfile,
@@ -118,6 +127,7 @@ function ScrollHarness({
       <TranscriptWindowProvider value={window ?? { olderAvailable: false, expandWindow: () => {} }}>
         <Thread
           clampToComposer={clampToComposer}
+          loading={loading ? 'session' : undefined}
           scrollProfile={scrollProfile}
           sessionId={sessionId}
           sessionKey={sessionKey}
@@ -462,6 +472,82 @@ describe('list session-scroll restore', () => {
       await settleScroll()
       expect(viewportEl(container).scrollTop).toBe(SCROLL_H - CLIENT_H)
     }
+  })
+
+  it('applies a push arrival once, to the visible hydrated transcript of its own profile', async () => {
+    // Browser Webapp's serving gateway has a local logical id and a remote
+    // transport descriptor, which also drives the existing positions' key.
+    rescopeConnectionScopedStores({ mode: 'remote', baseUrl: 'https://fixture.invalid', profile: 'default' })
+
+    const persist = (profile: string) =>
+      saveThreadScrollPosition('a', { fromBottom: 800, kind: 'offset' }, threadScrollStorageKey(profile))
+
+    persist('default')
+    persist('other')
+
+    const messages = sessionMessages('a')
+
+    const pane = (
+      visible: boolean,
+      profile: string,
+      rows: ThreadMessage[],
+      connectionId: string = LOCAL_CONNECTION_ID
+    ) => (
+      <ComposerScopeProvider value={{ ...MAIN_COMPOSER_SCOPE, connectionId, profile }}>
+        <PaneVisibleContext.Provider value={visible}>
+          <ScrollHarness key={profile} loading={!rows.length} messages={rows} scrollProfile={profile} sessionKey="a" />
+        </PaneVisibleContext.Provider>
+      </ComposerScopeProvider>
+    )
+
+    requestPushThreadEnd('a', 'default')
+    const { container, rerender } = render(pane(true, 'other', messages))
+    await settleScroll(10)
+    expect(viewportEl(container).scrollTop).toBe(SCROLL_H - CLIENT_H - 800)
+
+    expect($pushThreadArrival.get()?.sessionKey).toBe('a')
+    rerender(pane(true, 'default', messages, 'fixture-relay'))
+    await settleScroll(10)
+    expect(viewportEl(container).scrollTop).toBe(SCROLL_H - CLIENT_H - 800)
+    expect($pushThreadArrival.get()?.sessionKey).toBe('a')
+
+    rerender(pane(false, 'default', messages))
+    await settleScroll(10)
+    expect($pushThreadArrival.get()?.sessionKey).toBe('a')
+    rerender(pane(true, 'default', []))
+    await settleScroll(10)
+    expect($pushThreadArrival.get()?.sessionKey).toBe('a')
+    rerender(pane(true, 'default', messages))
+    await waitFor(() => {
+      expect($pushThreadArrival.get()).toBeNull()
+      expect(viewportEl(container).scrollTop).toBe(SCROLL_H - CLIENT_H)
+    })
+
+    // A subsequent reveal uses the reading position rather than replaying the tap.
+    rerender(pane(false, 'default', messages))
+    persist('default')
+    rerender(pane(true, 'default', messages))
+    await settleScroll(10)
+    expect(viewportEl(container).scrollTop).toBe(SCROLL_H - CLIENT_H - 800)
+  })
+
+  it('lets a newer sidebar open supersede a push while the matching transcript is still loading', async () => {
+    saveThreadScrollPosition('a', { fromBottom: 800, kind: 'offset' })
+    requestPushThreadEnd('a', 'default')
+
+    const pane = (loading: boolean, messages: ThreadMessage[]) => (
+      <ComposerScopeProvider value={{ ...MAIN_COMPOSER_SCOPE, connectionId: LOCAL_CONNECTION_ID, profile: 'default' }}>
+        <ScrollHarness loading={loading} messages={messages} sessionKey="a" />
+      </ComposerScopeProvider>
+    )
+
+    const { container, rerender } = render(pane(true, []))
+
+    noteUserSessionOpen()
+    rerender(pane(false, sessionMessages('a')))
+    await settleScroll(10)
+    expect($pushThreadArrival.get()).toBeNull()
+    expect(viewportEl(container).scrollTop).toBe(SCROLL_H - CLIENT_H - 800)
   })
 
   it.each([0, 800])('restores a kept-alive pane after hidden layout drift (offset %i)', async offset => {

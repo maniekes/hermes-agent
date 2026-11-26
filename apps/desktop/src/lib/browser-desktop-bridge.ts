@@ -21,6 +21,7 @@ import { announceWebappWindow, createBrowserWindowOpener, sessionWindowTarget } 
 import { createBrowserZoom } from '@/lib/browser-zoom'
 import { failDesktopBoot } from '@/store/boot'
 import { $connection } from '@/store/session'
+import { requestPushThreadEnd } from '@/store/thread-scroll'
 import { windowProfileOverride } from '@/store/windows'
 
 import { resolveGatewayVersion } from '../../electron/gateway-version'
@@ -66,6 +67,7 @@ export function installBrowserDesktopBridge(): boolean {
   const pushLink = consumeBrowserPushLink(new URL(window.location.href))
 
   if (pushLink) {
+    requestPushThreadEnd(pushLink.hash.slice(2), pushLink.searchParams.get('profile'))
     window.history.replaceState(window.history.state, '', pushLink)
   }
 
