@@ -1,3 +1,4 @@
+import { LOCAL_CONNECTION_ID } from '@hermes/shared'
 import { QueryClient } from '@tanstack/react-query'
 import { act, cleanup } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -7,6 +8,8 @@ import type { ClientSessionState } from '@/app/types'
 import * as browserPush from '@/lib/browser-web-push'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { modelOptionsQueryKey } from '@/lib/model-options'
+import * as gateways from '@/store/gateway'
+import { $activeGatewayProfile } from '@/store/profile'
 import { $sessions, setCurrentModel, setCurrentProvider } from '@/store/session'
 import { $focusedRuntimeId } from '@/store/session-states'
 
@@ -60,20 +63,35 @@ afterEach(() => {
 })
 
 describe('cron report notifications', () => {
+  const transcriptOwner = { connectionId: LOCAL_CONNECTION_ID, profile: ACTIVE_PROFILE }
+
+  const reportInfo = (payload: Record<string, unknown>) => act(() => stream.handleEvent({
+    ...transcriptOwner, payload, session_id: ACTIVE_SID, type: 'session.info'
+  }))
+
+  const previousProfile = $activeGatewayProfile.get()
+
+  beforeEach(() => {
+    $activeGatewayProfile.set(ACTIVE_PROFILE)
+    vi.spyOn(gateways, 'activeGatewayConnectionId').mockReturnValue(LOCAL_CONNECTION_ID)
+  })
+
+  afterEach(() => $activeGatewayProfile.set(previousProfile))
+
   it.each([true, false])('appends a committed report once and acknowledges only the focused document (%s)', visible => {
     const acknowledge = vi.spyOn(browserPush, 'acknowledgeBrowserPush').mockImplementation(() => {})
     vi.spyOn(window.document, 'hidden', 'get').mockReturnValue(!visible)
     vi.spyOn(window.document, 'hasFocus').mockReturnValue(visible)
     vi.spyOn($focusedRuntimeId, 'get').mockReturnValue(ACTIVE_SID)
     mountStream()
-    sessionStates!.set(ACTIVE_SID, { ...createClientSessionState(), storedSessionId: 'target-chat' })
+    sessionStates!.set(ACTIVE_SID, { ...createClientSessionState(), transcriptOwner, storedSessionId: 'target-chat' })
     const report = { content: 'Synthetic report note', id: 'b'.repeat(32), row_id: 10, timestamp: 100 }
-    sessionInfo(ACTIVE_SID, { cron_report: report, stored_session_id: 'target-chat' })
+    reportInfo({ cron_report: report, stored_session_id: 'target-chat' })
     expect(sessionStates!.get(ACTIVE_SID)!.messages.map(row => row.rowId)).toEqual([10])
     expect(acknowledge).toHaveBeenCalledTimes(visible ? 1 : 0)
 
-    sessionInfo(ACTIVE_SID, { cron_report: report, stored_session_id: 'target-chat' })
-    sessionInfo(ACTIVE_SID, { cron_report: { ...report, row_id: 9 }, stored_session_id: 'target-chat' })
+    reportInfo({ cron_report: report, stored_session_id: 'target-chat' })
+    reportInfo({ cron_report: { ...report, row_id: 9 }, stored_session_id: 'target-chat' })
     expect(sessionStates!.get(ACTIVE_SID)!.messages.map(row => row.rowId)).toEqual([10])
   })
 
@@ -89,11 +107,11 @@ describe('cron report notifications', () => {
       profile: ACTIVE_PROFILE
     } as never])
     mountStream()
-    sessionStates!.set(ACTIVE_SID, { ...createClientSessionState(), storedSessionId: 'tip' })
+    sessionStates!.set(ACTIVE_SID, { ...createClientSessionState(), transcriptOwner, storedSessionId: 'tip' })
     const report = { content: 'Synthetic compressed report', id: 'd'.repeat(32), row_id: 42, timestamp: 100 }
 
-    sessionInfo(ACTIVE_SID, { cron_report: report, stored_session_id: 'root' })
-    sessionInfo(ACTIVE_SID, { cron_report: { ...report, row_id: 43 }, stored_session_id: 'foreign' })
+    reportInfo({ cron_report: report, stored_session_id: 'root' })
+    reportInfo({ cron_report: { ...report, row_id: 43 }, stored_session_id: 'foreign' })
 
     expect(sessionStates!.get(ACTIVE_SID)!.messages.map(row => row.rowId)).toEqual([42])
     expect(acknowledge).toHaveBeenCalledTimes(1)
@@ -102,8 +120,8 @@ describe('cron report notifications', () => {
   it('does not acknowledge a report on a different stored binding', () => {
     const acknowledge = vi.spyOn(browserPush, 'acknowledgeBrowserPush').mockImplementation(() => {})
     mountStream()
-    sessionStates!.set(ACTIVE_SID, { ...createClientSessionState(), storedSessionId: 'other-chat' })
-    sessionInfo(ACTIVE_SID, {
+    sessionStates!.set(ACTIVE_SID, { ...createClientSessionState(), transcriptOwner, storedSessionId: 'other-chat' })
+    reportInfo({
       cron_report: { content: 'Synthetic report note', id: 'b'.repeat(32), row_id: 10, timestamp: 100 },
       stored_session_id: 'target-chat'
     })

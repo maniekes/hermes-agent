@@ -1,6 +1,7 @@
 import { renderHook } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { recordSessionAttachment } from '@/api/session-attachment'
 import { reasoningEffortPending } from '@/app/chat/session-view'
 import type { ClientSessionState } from '@/app/types'
 import type * as HermesModule from '@/hermes'
@@ -89,6 +90,37 @@ describe('useSessionTileDelegate resumeTile', () => {
   afterEach(() => {
     clearSingleFlightSessionResumeState()
     setSessions([])
+  })
+
+  it('does not treat a foreign cached transcript as recovery from a failed scoped read', async () => {
+    const runtimeId = 'shared-root'
+    const storedSessionId = 'beta-tip'
+    const ownerRoute = { connectionId: 'local', profile: 'beta' }
+    const snapshot = { session_id: runtimeId, info: { stored_session_id: runtimeId }, messages: [] }
+
+    recordSessionAttachment(snapshot, { ...ownerRoute, runtimeId, isCurrent: () => true })
+    vi.mocked(requestGatewayForAgent).mockResolvedValueOnce(snapshot as never)
+    vi.mocked(getLatestSessionMessages).mockRejectedValueOnce(new Error('page unavailable'))
+    $sessionTiles.set([{ ownerRoute, storedSessionId }])
+
+    const foreign = {
+      ...createClientSessionState(runtimeId),
+      transcriptOwner: { connectionId: 'local', profile: 'alpha' },
+      messages: [{ id: 'alpha-row', role: 'user', parts: [textPart('synthetic alpha')] }]
+    }
+
+    const updateSessionState = vi.fn()
+    renderTile(vi.fn(), {
+      sessionStateByRuntimeIdRef: { current: new Map([[runtimeId, foreign]]) },
+      updateSessionState
+    })
+
+    try {
+      await expect(sessionTileDelegate()!.resumeTile(storedSessionId)).rejects.toThrow('Could not load the session transcript')
+      expect(updateSessionState).not.toHaveBeenCalled()
+    } finally {
+      $sessionTiles.set([])
+    }
   })
 
   it('carries the owning profile into a cold tile resume so it cannot fork profiles', async () => {

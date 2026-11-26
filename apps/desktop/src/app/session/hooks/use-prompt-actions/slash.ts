@@ -2,6 +2,7 @@ import { skillInvocationText } from '@hermes/shared'
 import { mergeUsage, parseCommandDispatch, parseSlashCommand, randomUuid } from '@hermes/shared'
 import { type MutableRefObject, useCallback, useRef } from 'react'
 
+import type { SessionAttachment } from '@/api/session-attachment'
 import { mergeOlderTranscriptPage } from '@/app/chat/transcript-backfill'
 import { prepareDefaultNewSession } from '@/app/session/new-session-route'
 import { invalidateContextBreakdown } from '@/app/shell/hooks/use-context-breakdown'
@@ -171,7 +172,8 @@ interface SlashCommandDeps {
   updateSessionState: (
     sessionId: string,
     updater: (state: ClientSessionState) => ClientSessionState,
-    storedSessionId?: string | null
+    storedSessionId?: string | null,
+    attachment?: SessionAttachment
   ) => ClientSessionState
 }
 
@@ -677,8 +679,12 @@ export function useSlashCommand(deps: SlashCommandDeps) {
               liveId => requestGateway('session.interrupt', { session_id: liveId }),
               {
                 requestGateway,
-                onRecovered: recoveredId => {
+                onRecovered: (recoveredId, attachment) => {
                   if (activeSessionIdRef.current === initialSessionId) {
+                    if (attachment) {
+                      updateSessionState(recoveredId, state => state, storedSessionId, attachment)
+                    }
+
                     activeSessionIdRef.current = recoveredId
                     setActiveSessionId(recoveredId)
                   }
@@ -861,13 +867,17 @@ export function useSlashCommand(deps: SlashCommandDeps) {
                 ),
               {
                 requestGateway,
-                onRecovered: recoveredId => {
+                onRecovered: (recoveredId, attachment) => {
                   // Move the in-flight claim onto the live id so the coalesce
                   // guard releases the right key in `finally`.
                   compressInFlightRef.current.delete(sessionId)
                   compressInFlightRef.current.add(recoveredId)
 
                   if (activeSessionIdRef.current === initialSessionId) {
+                    if (attachment) {
+                      updateSessionState(recoveredId, state => state, storedSessionId, attachment)
+                    }
+
                     activeSessionIdRef.current = recoveredId
                     setActiveSessionId(recoveredId)
                   }

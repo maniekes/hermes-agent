@@ -1,3 +1,4 @@
+import type { AppendMessage, ThreadMessage } from '@assistant-ui/react'
 /**
  * Prompt actions for a SESSION TILE — the same verbs the primary chat wires
  * (submit incl. slash, cancel, steer, edit, reload, restore, branch-hide
@@ -7,11 +8,10 @@
  * concerns (busy pill, transcript) reach the tile via its `$sessionStates`
  * slice — never the global `$busy`/`$messages`.
  */
-
-import type { AppendMessage, ThreadMessage } from '@assistant-ui/react'
 import { isUndeliveredCorrectionRefusal } from '@hermes/shared'
 import { useCallback, useMemo, useRef } from 'react'
 
+import { sameSessionBindingOwner, type SessionAttachment } from '@/api/session-attachment'
 import type { ClientSessionState } from '@/app/types'
 import type { WorkspaceMode } from '@/contrib/types'
 import { useI18n } from '@/i18n'
@@ -155,8 +155,21 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
   const runtimeIdByStoredSessionIdRef = useRef(new Map([[storedSessionId, runtimeId]]))
   runtimeIdByStoredSessionIdRef.current.set(storedSessionId, runtimeId)
 
-  const bindRecoveredRuntime = useCallback((recoveredId: string) => {
+  const bindRecoveredRuntime = useCallback((recoveredId: string, attachment?: SessionAttachment) => {
     const storedId = storedIdRef.current
+    const tile = $sessionTiles.get().find(candidate => candidate.storedSessionId === storedId)
+
+    if (attachment && (!tile || tile.runtimeId !== runtimeIdRef.current ||
+        (tile.ownerRoute && !sameSessionBindingOwner(attachment, {
+          connectionId: tile.ownerRoute.connectionId,
+          profile: tile.ownerRoute.targetProfile ?? tile.ownerRoute.profile
+        })))) {
+      return
+    }
+
+    if (attachment) {
+      sessionTileDelegate()?.updateSession(recoveredId, state => state, storedId, attachment)
+    }
 
     runtimeIdRef.current = recoveredId
     runtimeIdByStoredSessionIdRef.current.set(storedId, recoveredId)
@@ -242,7 +255,6 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
       // tile's ref rather than the foreground session's.
       const onSessionRecovered = (recoveredId: string) => {
         liveSessionId = recoveredId
-        bindRecoveredRuntime(recoveredId)
       }
 
       for (const attachment of attachments) {
@@ -259,6 +271,7 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
             requestGateway: requestSessionGateway,
             sessionId: liveSessionId,
             storedSessionId: storedIdRef.current,
+            onRecovered: bindRecoveredRuntime,
             onSessionRecovered
           })
 
@@ -314,7 +327,7 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
     resumeStoredSession: () => undefined,
     selectedStoredSessionIdRef: storedIdRef,
     syncAttachmentsForSubmit,
-    updateSessionState: (sessionId, updater) => sessionTileDelegate()!.updateSession(sessionId, updater),
+    updateSessionState: (...args) => sessionTileDelegate()!.updateSession(...args),
     scope: {
       removeAttachments: attachments => scope.attachments.removeOccurrences(attachments),
       patchAttachment: (expected, patch) => void scope.attachments.updateIfCurrent(expected, patch),
@@ -353,7 +366,7 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
 
       return await submitPromptText(rawText, options)
     },
-    [listTileSession, scope.attachments.$attachments, submitPromptText]
+    [copy.slashCommandIgnoredBody, copy.slashCommandIgnoredTitle, listTileSession, scope.attachments.$attachments, submitPromptText]
   )
 
   const cancelRun = useCallback(async () => {

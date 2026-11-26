@@ -3,6 +3,7 @@ import { useStore } from '@nanostores/react'
 import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 import type { NavigateFunction } from 'react-router'
 
+import { sameSessionBindingOwner, sessionAttachment, type SessionAttachment } from '@/api/session-attachment'
 import { NO_PROJECT_ID } from '@/app/chat/sidebar/projects/workspace-groups'
 import {
   extendRefreshPageToOverlap,
@@ -254,7 +255,8 @@ interface SessionActionsOptions {
   updateSessionState: (
     sessionId: string,
     updater: (state: ClientSessionState) => ClientSessionState,
-    storedSessionId?: string | null
+    storedSessionId?: string | null,
+    attachment?: SessionAttachment
   ) => ClientSessionState
 }
 
@@ -297,7 +299,6 @@ export function useSessionActions({
   activeSessionIdRef,
   busyRef,
   creatingSessionRef,
-  ensureSessionState,
   getRouteToken,
   getRoutedStoredSessionId,
   holdSessionTranscriptView,
@@ -689,7 +690,7 @@ export function useSessionActions({
           submitTargetStoredId: stored
         })
 
-        if (drift) {
+        if (drift || sessionAttachment(created)?.isCurrent() === false) {
           console.warn('[submit-drift-abort]', drift, { phase: 'mid-create' })
 
           // Close on the backend that minted the session: the ambient socket
@@ -718,7 +719,7 @@ export function useSessionActions({
 
         activeSessionIdRef.current = created.session_id
         selectedStoredSessionIdRef.current = stored
-        ensureSessionState(created.session_id, stored)
+        updateSessionState(created.session_id, state => state, stored, sessionAttachment(created))
 
         if (stored) {
           markSessionCreatedThisRun(stored)
@@ -785,7 +786,6 @@ export function useSessionActions({
       activeSessionIdRef,
       armPendingCreatedSession,
       creatingSessionRef,
-      ensureSessionState,
       getRouteToken,
       navigate,
       releaseCreatingSessionGuard,
@@ -823,7 +823,7 @@ export function useSessionActions({
         submitTargetStoredId: stored
       })
 
-      if (drift) {
+      if (drift || sessionAttachment(created)?.isCurrent() === false) {
         console.warn('[submit-drift-abort]', drift, { phase: 'quick-entry-new' })
         throw new Error(`Quick Entry destination changed mid-create: ${drift}`)
       }
@@ -836,7 +836,7 @@ export function useSessionActions({
       try {
         markSessionCreatedThisRun(stored)
         runtimeIdByStoredSessionIdRef.current.set(stored, created.session_id)
-        ensureSessionState(created.session_id, stored)
+        updateSessionState(created.session_id, state => state, stored, sessionAttachment(created))
         upsertOptimisticSession(created, stored, null, text.trim())
         // The route's warm resume paints this cached state as-is, so the first
         // user message has to be in it, as a composer send seeds it.
@@ -893,7 +893,6 @@ export function useSessionActions({
       }
     },
     [
-      ensureSessionState,
       getRouteToken,
       navigate,
       requestGateway,
@@ -1122,7 +1121,12 @@ export function useSessionActions({
         // Project "+" created a session while the main chat was occupied
         // (#76696). Split/side tiles deliberately stay isolated.
         const runtimeInfo = applyRuntimeInfo(created.info, backgroundRuntimeOptions(capturedRoute, requestedProfile))
-        updateSessionState(created.session_id, state => (runtimeInfo ? { ...state, ...runtimeInfo } : state), stored)
+        updateSessionState(
+          created.session_id,
+          state => (runtimeInfo ? { ...state, ...runtimeInfo } : state),
+          stored,
+          sessionAttachment(created)
+        )
 
         openSessionTile(stored, dir, options?.anchor, options?.before, workspaceScope)
         patchSessionTile(stored, { runtimeId: created.session_id })
@@ -1373,8 +1377,15 @@ export function useSessionActions({
       // cache may have changed, and takeWarmCache re-validates belongs-to and
       // purges a cross-wired mapping before we trust the fast-path.
       const warmHit = takeWarmCache()
+      const warmOwner = warmHit?.state.transcriptOwner
 
-      if (warmHit && !options?.authoritativeSnapshot) {
+      const expectedOwner = sessionOwner && typeof sessionOwner === 'object'
+        ? { connectionId: sessionOwner.connectionId, profile: sessionOwner.targetProfile ?? sessionOwner.profile }
+        : undefined
+
+      const foreignWarm = Boolean(warmOwner && expectedOwner && !sameSessionBindingOwner(warmOwner, expectedOwner))
+
+      if (warmHit && !foreignWarm && !options?.authoritativeSnapshot) {
         const cachedRuntimeId = warmHit.runtimeId
         const cachedState = warmHit.state
 
@@ -1519,11 +1530,15 @@ export function useSessionActions({
               return
             }
 
-            if (!isCurrentResume()) {
+            const activatedAttachment = sessionAttachment(activated)
+
+            if (!isCurrentResume() || activatedAttachment?.isCurrent() === false) {
               return
             }
 
-            if (activated.session_key && activated.session_key !== storedSessionId) {
+            if ((activatedAttachment && cachedState.transcriptOwner &&
+                 !sameSessionBindingOwner(activatedAttachment, cachedState.transcriptOwner)) ||
+                (activated.session_key && activated.session_key !== storedSessionId)) {
               runtimeIdByStoredSessionIdRef.current.delete(storedSessionId)
               sessionStateByRuntimeIdRef.current.delete(cachedRuntimeId)
               dropSessionState(cachedRuntimeId)
@@ -1645,7 +1660,8 @@ export function useSessionActions({
                       }
                     : {})
                 }),
-                storedSessionId
+                storedSessionId,
+                activatedAttachment
               )
 
               busyRef.current = running
@@ -1917,7 +1933,7 @@ export function useSessionActions({
       // session's transcript would leak into this cold resume ("switching
       // sessions shows the same messages"). Clear it so the loader/prefetch
       // paints fresh; guarded so the normal cold path (already cleared) no-ops.
-      if (!resumedSameSelectedSession && $messages.get().length > 0 && $messages.get() !== provisional.messages) {
+      if ((foreignWarm || !resumedSameSelectedSession) && $messages.get().length > 0 && $messages.get() !== provisional.messages) {
         setMessages([])
       }
 
@@ -1973,7 +1989,7 @@ export function useSessionActions({
       try {
         const watchWindow = isWatchWindow()
 
-        let localSnapshot = resumedSameSelectedSession
+        let localSnapshot = resumedSameSelectedSession && !foreignWarm
           ? preserveLocalPendingTurnMessages(viewMessagesForReconcile(), resumeStartMessages)
           : viewMessagesForReconcile()
 
@@ -2003,7 +2019,7 @@ export function useSessionActions({
               'session.resume',
               primaryResumeParams(storedSessionId, watchWindow, options?.authoritativeSnapshot, sessionProfile)
             ),
-          { requiresMessages: options?.authoritativeSnapshot, scope: sessionOwner }
+          { requiresMessages: options?.authoritativeSnapshot, scope: expectedOwner ?? sessionOwner }
         ).then(resumed => {
           resumeRuntimeBaselineMessages =
             sessionStateByRuntimeIdRef.current.get(resumed.session_id)?.messages ?? resumeRuntimeBaselineMessages
@@ -2054,7 +2070,7 @@ export function useSessionActions({
         // snapshot, so an unchanged acknowledgement keeps reference identity
         // and never rebuilds the transcript a second time.
         if (prefetchedResult && isCurrentResume()) {
-          const previousMessages = resumedSameSelectedSession
+          const previousMessages = resumedSameSelectedSession && !foreignWarm
             ? preserveLocalPendingTurnMessages(viewMessagesForReconcile(), resumeStartMessages)
             : viewMessagesForReconcile()
 
@@ -2072,6 +2088,7 @@ export function useSessionActions({
         }
 
         const resumed = await resumePromise
+        const attachment = sessionAttachment(resumed)
 
         const reread = await rereadPageAfterResumeBarrier(resumed, prefetchedPage, storedSessionId, sessionRestScope)
 
@@ -2079,11 +2096,18 @@ export function useSessionActions({
           ;({ page: prefetchedResult, snapshot: localSnapshot, transcript: prefetchedTranscriptMessages } = reread.page)
         }
 
-        if (!isCurrentResume()) {
+        if (!isCurrentResume() || (attachment && !attachment.isCurrent())) {
           return
         }
 
-        const currentMessages = viewMessagesForReconcile()
+        const runtimeState = sessionStateByRuntimeIdRef.current.get(resumed.session_id)
+
+        const replacedOwner = Boolean(attachment && runtimeState &&
+          !sameSessionBindingOwner(attachment, runtimeState.transcriptOwner))
+
+        const currentMessages = replacedOwner
+          ? (prefetchedTranscriptMessages ?? [])
+          : viewMessagesForReconcile()
 
         // A current prefetch skips converting the resume payload (over a second
         // on a 1000+-message session); a page older than the resume snapshot
@@ -2102,6 +2126,10 @@ export function useSessionActions({
           }
 
           if (prefetchApplied && prefetchMatchesResumedSession) {
+            if (replacedOwner && !hasLiveProjection) {
+              return prefetchedTranscriptMessages ?? []
+            }
+
             if (hasLiveProjection && prefetchedTranscriptMessages) {
               const runtimeMessages = toChatMessages(resumed.messages)
               const previousMessages = removeRepresentedLocalLiveProjection(currentMessages, resumed)
@@ -2141,7 +2169,7 @@ export function useSessionActions({
             }
           }
 
-          const previousMessages = resumedSameSelectedSession
+          const previousMessages = resumedSameSelectedSession && !replacedOwner
             ? preserveLocalPendingTurnMessages(currentMessages, resumeStartMessages)
             : currentMessages
 
@@ -2150,12 +2178,13 @@ export function useSessionActions({
           return chatMessageArraysEquivalent(currentMessages, resumedMessages) ? currentMessages : resumedMessages
         })()
 
-        const currentRuntimeMessages =
-          sessionStateByRuntimeIdRef.current.get(resumed.session_id)?.messages ?? resumeRuntimeBaselineMessages
+        const currentRuntimeMessages = replacedOwner
+          ? []
+          : runtimeState?.messages ?? resumeRuntimeBaselineMessages
 
         const preferredWithRuntimeChanges = overlayConcurrentMessageChanges(
           preferredMessages,
-          resumeRuntimeBaselineMessages,
+          replacedOwner ? [] : resumeRuntimeBaselineMessages,
           currentRuntimeMessages
         )
 
@@ -2165,7 +2194,7 @@ export function useSessionActions({
         // rewind it to idle just because the user opened the chat.
         resumedRunning = resolveResumedBusy(
           (resumed as { running?: boolean }).running,
-          Boolean(sessionStateByRuntimeIdRef.current.get(resumed.session_id)?.busy)
+          Boolean(!replacedOwner && runtimeState?.busy)
         )
 
         restoreSessionTodosFromSnapshot(resumed.session_id, resumed.todo_state, resumedRunning)
@@ -2326,7 +2355,8 @@ export function useSessionActions({
                 }
               : {})
           }),
-          storedSessionId
+          storedSessionId,
+          attachment
         )
 
         // updateSessionState stages its view sync through requestAnimationFrame.
@@ -2679,6 +2709,10 @@ export function useSessionActions({
 
         const branched = await createFlight
 
+        if (sessionAttachment(branched)?.isCurrent() === false) {
+          return false
+        }
+
         const responseBranchMessages =
           sourceSessionId && branched.messages?.length ? toBranchMessages(toChatMessages(branched.messages)) : []
 
@@ -2727,7 +2761,6 @@ export function useSessionActions({
           parent ? parent.last_active || parent.started_at : undefined,
           ownerRoute ?? null
         )
-        ensureSessionState(branched.session_id, routedSessionId)
         updateSessionState(
           branched.session_id,
           state => ({
@@ -2737,7 +2770,8 @@ export function useSessionActions({
             busy: false,
             awaitingResponse: false
           }),
-          routedSessionId
+          routedSessionId,
+          sessionAttachment(branched)
         )
 
         const runtimeInfo = applyRuntimeInfo(branched.info, backgroundRuntimeOptions(ownerRoute, profile))
@@ -2813,8 +2847,8 @@ export function useSessionActions({
     [
       copy,
       creatingSessionRef,
-      ensureSessionState,
       navigate,
+      releaseCreatingSessionGuard,
       requestGateway,
       resumeSession,
       selectedStoredSessionIdRef,

@@ -4,6 +4,7 @@ import { stripAnsi } from '@hermes/shared/ansi'
 import { useStore } from '@nanostores/react'
 import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 
+import { type SessionAttachment } from '@/api/session-attachment'
 import { type ResolvedOwner, transcribeAudio } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { attachmentPathNeedsUpload } from '@/lib/attachment-upload-policy'
@@ -120,9 +121,9 @@ export async function uploadComposerAttachment(
     /** Durable id used to re-register after sleep/wake or a backend restart. */
     storedSessionId?: null | string
     /** Runs BEFORE the retried attach: publish the recovered stored→runtime binding here. */
-    onRecovered?: (sessionId: string) => void
+    onRecovered?: (sessionId: string, attachment?: SessionAttachment) => void
     /** Called when the attach recovered onto a fresh live id. */
-    onSessionRecovered?: (sessionId: string) => void
+    onSessionRecovered?: (sessionId: string, attachment?: SessionAttachment) => void
     terminalBackend?: string
   }
 ): Promise<ComposerAttachment> {
@@ -271,7 +272,8 @@ interface PromptActionsOptions {
   updateSessionState: (
     sessionId: string,
     updater: (state: ClientSessionState) => ClientSessionState,
-    storedSessionId?: string | null
+    storedSessionId?: string | null,
+    attachment?: SessionAttachment
   ) => ClientSessionState
 }
 
@@ -411,10 +413,10 @@ export function usePromptActions({
 
       // Published BEFORE the retried attach (see uploadComposerAttachment): the
       // stored→runtime binding is what routes the retry to the session's owner.
-      const onRecovered = (recoveredId: string) => {
+      const onRecovered = (recoveredId: string, attachment?: SessionAttachment) => {
         if (storedSessionId) {
           runtimeIdByStoredSessionIdRef.current.set(storedSessionId, recoveredId)
-          updateSessionState(recoveredId, state => state, storedSessionId)
+          updateSessionState(recoveredId, state => state, storedSessionId, attachment)
         }
 
         // Only a foreground send may retarget the foreground: a background
@@ -719,7 +721,7 @@ export function usePromptActions({
 
       return await submitPromptText(rawText, options)
     },
-    [executeSlashCommand, submitPromptText]
+    [copy.slashCommandIgnoredBody, copy.slashCommandIgnoredTitle, executeSlashCommand, submitPromptText]
   )
 
   const transcribeVoiceAudio = useCallback(
@@ -824,14 +826,22 @@ export function usePromptActions({
     clearAllPrompts(sessionId)
     clearClarifyRequest(undefined, sessionId)
 
+    const recoveryStoredId = selectedStoredSessionIdRef.current
+
     try {
       await withSessionNotFoundResume(
         sessionId,
-        selectedStoredSessionIdRef.current,
+        recoveryStoredId,
         liveId => requestGateway('session.interrupt', { session_id: liveId }),
         {
           requestGateway,
-          onRecovered: recoveredId => {
+          driftReason: () => activeSessionIdRef.current !== sessionId ||
+            selectedStoredSessionIdRef.current !== recoveryStoredId ? 'session selection changed' : null,
+          onRecovered: (recoveredId, attachment) => {
+            if (attachment) {
+              updateSessionState(recoveredId, state => state, recoveryStoredId, attachment)
+            }
+
             activeSessionIdRef.current = recoveredId
             setActiveSessionId(recoveredId)
           }
@@ -1066,8 +1076,10 @@ export function usePromptActions({
       sourceText?: string,
       rebindRowIds?: readonly number[],
       confirmDeepTruncate?: boolean
-    ) =>
-      runRewindSubmit(
+    ) => {
+      const recoveryStoredId = selectedStoredSessionIdRef.current
+
+      return runRewindSubmit(
         requestGateway,
         sessionId,
         text,
@@ -1075,8 +1087,14 @@ export function usePromptActions({
         truncateMessageId,
         interruptFirst,
         {
-          storedSessionId: selectedStoredSessionIdRef.current,
-          onSessionRecovered: recoveredId => {
+          storedSessionId: recoveryStoredId,
+          driftReason: () => activeSessionIdRef.current !== sessionId ||
+            selectedStoredSessionIdRef.current !== recoveryStoredId ? 'session selection changed' : null,
+          onSessionRecovered: (recoveredId, attachment) => {
+            if (attachment) {
+              updateSessionState(recoveredId, state => state, recoveryStoredId, attachment)
+            }
+
             activeSessionIdRef.current = recoveredId
             setActiveSessionId(recoveredId)
           }
@@ -1085,8 +1103,9 @@ export function usePromptActions({
         sourceText,
         rebindRowIds,
         confirmDeepTruncate
-      ),
-    [activeSessionIdRef, requestGateway, selectedStoredSessionIdRef]
+      )
+    },
+    [activeSessionIdRef, requestGateway, selectedStoredSessionIdRef, updateSessionState]
   )
 
   // answeredFor is internal (the 4033 re-run); assistant-ui calls onReload(parentId, config).
@@ -1539,8 +1558,6 @@ export function usePromptActions({
       busyRef,
       copy.editFailed,
       copy.editTurnUnavailable,
-      resumeStoredSession,
-      selectedStoredSessionIdRef,
       retryStaleEdit,
       rollBackEdit,
       submitRewindPrompt,

@@ -1,3 +1,4 @@
+import { backendScopeKey, type GatewayEvent, LOCAL_CONNECTION_ID, registryBackendScopeKey } from '@hermes/shared'
 /**
  * MULTI-SESSION VIEW STATE — the reactive face of the per-runtime session
  * cache (`sessionStateByRuntimeIdRef` in use-session-state-cache).
@@ -15,11 +16,10 @@
  * owns resume/submit (it has the gateway + cache internals) and registers
  * itself here as the delegate so tile UI stays dependency-light.
  */
-
-import { backendScopeKey, type GatewayEvent, LOCAL_CONNECTION_ID, registryBackendScopeKey } from '@hermes/shared'
 import { atom, computed } from 'nanostores'
 
 import { setSessionOwnerResolver } from '@/api/client'
+import { sameSessionBindingOwner, type SessionAttachment } from '@/api/session-attachment'
 import { routeSessionId } from '@/app/routes'
 import type { ClientSessionState } from '@/app/types'
 import { findGroupOfPane } from '@/components/pane-shell/tree/model'
@@ -869,9 +869,12 @@ function evictable(runtimeId: string, state: ClientSessionState): boolean {
  *  state a beat before `$activeSessionId` / the tile binding points at it. */
 export function publishSessionState(runtimeId: string, state: ClientSessionState) {
   const current = $sessionStates.get()
-  const prev = current[runtimeId] ?? null
+  const previous = current[runtimeId] ?? null
 
-  if (prev === state) {
+  const prev = state.transcriptOwner && previous?.transcriptOwner &&
+    !sameSessionBindingOwner(state.transcriptOwner, previous.transcriptOwner) ? null : previous
+
+  if (previous === state) {
     return
   }
 
@@ -2230,7 +2233,12 @@ export interface SessionTileDelegate {
   submitToSession(runtimeId: string, text: string): Promise<AcceptedSessionIdentity>
   /** THE session-state write path — routes through the wiring cache so the
    *  cache, the primary view (when active), and every tile mirror agree. */
-  updateSession(runtimeId: string, updater: (state: ClientSessionState) => ClientSessionState): ClientSessionState
+  updateSession(
+    runtimeId: string,
+    updater: (state: ClientSessionState) => ClientSessionState,
+    storedSessionId?: string | null,
+    attachment?: SessionAttachment
+  ): ClientSessionState
 }
 
 /** Exact identity a prompt was accepted into: live runtime id + durable stored id. */

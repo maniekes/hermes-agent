@@ -134,7 +134,7 @@ export function useGatewayRequest() {
           return null
         }
 
-        await existing.connect(wsUrl)
+        await existing.connect(wsUrl, conn.connectionId)
 
         return existing
       } catch (error) {

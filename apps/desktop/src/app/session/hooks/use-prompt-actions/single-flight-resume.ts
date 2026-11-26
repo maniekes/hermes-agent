@@ -1,4 +1,7 @@
 import { ambientOwnerConnectionId, type ProfileScope } from '@/api/client'
+import type { SessionAttachment, SessionBindingOwner } from '@/api/session-attachment'
+import { isBrowserHostedDesktop } from '@/lib/platform'
+import type { SessionOwnerRoute } from '@/store/session-request-router'
 
 /**
  * Single-flight guard for `session.resume`, keyed by backend connection + STORED id.
@@ -14,18 +17,22 @@ import { ambientOwnerConnectionId, type ProfileScope } from '@/api/client'
  * callers resolve to a `session.resume`-shaped response (an object carrying
  * `session_id`); joiners receive whatever the winning call returns.
  *
- * The key is the CONNECTION, not the profile: a stored id is unique within one
- * backend's state.db but two registry backends can hold the same id, so their
- * flights must stay apart. Callers that pass no scope (submit/rewind recovery,
- * the route resolver) dial the ambient socket, as does a bare-profile owner, so
- * both fold onto the ambient connection and still coalesce with a scoped
- * foreground resume of the same runtime under any profile.
+ * Only an exact route can share a Webapp request. Legacy callers outside
+ * Webapp keep their existing collapse onto the ambient connection.
  */
+type ResumeScope = ProfileScope | SessionOwnerRoute
 
-function flightConnectionId(scope?: ProfileScope): string {
-  const explicit = scope && typeof scope === 'object' ? (scope.connectionId ?? '').trim() : ''
+function flightScope(scope?: ResumeScope): string[] | undefined {
+  if (scope && typeof scope === 'object') {
+    const connectionId = scope.connectionId?.trim()
+    const profile = ('targetProfile' in scope ? scope.targetProfile?.trim() : undefined) || scope.profile?.trim()
 
-  return explicit || ambientOwnerConnectionId() || ''
+    if (connectionId && profile) {
+      return [connectionId, profile]
+    }
+  }
+
+  return isBrowserHostedDesktop() ? undefined : [ambientOwnerConnectionId() || '']
 }
 
 interface SessionResumeFlight {
@@ -38,9 +45,15 @@ const _inFlightResumeByStoredSessionId = new Map<string, SessionResumeFlight>()
 export function singleFlightSessionResume<T>(
   storedSessionId: string,
   run: () => Promise<T>,
-  options?: { requiresMessages?: boolean; scope?: ProfileScope }
+  options?: { requiresMessages?: boolean; scope?: ResumeScope }
 ): Promise<T> {
-  const flightKey = JSON.stringify([flightConnectionId(options?.scope), storedSessionId])
+  const scope = flightScope(options?.scope)
+
+  if (!scope) {
+    return Promise.resolve().then(run)
+  }
+
+  const flightKey = JSON.stringify([...scope, storedSessionId])
   const existing = _inFlightResumeByStoredSessionId.get(flightKey)
 
   if (existing && (!options?.requiresMessages || existing.includesMessages)) {
@@ -84,30 +97,45 @@ export function singleFlightSessionResume<T>(
  * onRecovered/onRuntimeRecovered) is wrong — the user is elsewhere — record it
  * here so the next resume-shaped action reuses it instead of re-minting.
  */
-const _recoveredRuntimeByStoredSessionId = new Map<string, string>()
+const _recoveredRuntimeByStoredSessionId = new Map<string, string | SessionAttachment>()
 
-export function registerRecoveredRuntime(storedSessionId: string, runtimeId: string): void {
-  if (storedSessionId && runtimeId) {
+function recoveryKey(storedSessionId: string, owner: SessionBindingOwner): string {
+  return JSON.stringify([owner.connectionId, owner.profile, storedSessionId])
+}
+
+export function registerRecoveredRuntime(storedSessionId: string, runtimeId: string, attachment?: SessionAttachment): void {
+  if (!storedSessionId || !runtimeId) {
+    return
+  }
+
+  if (attachment?.runtimeId === runtimeId && attachment.isCurrent()) {
+    _recoveredRuntimeByStoredSessionId.set(recoveryKey(storedSessionId, attachment), attachment)
+  } else if (!isBrowserHostedDesktop()) {
     _recoveredRuntimeByStoredSessionId.set(storedSessionId, runtimeId)
   }
 }
 
-/**
- * Consume a previously-abandoned recovered runtime for this stored session.
- * Take-semantics: the entry is removed so a dead cached id can only cost one
- * bounded retry, never a loop. `deadRuntimeId` skips (and drops) the entry
- * when the caller already knows that exact runtime is dead.
- */
-export function takeRecoveredRuntime(storedSessionId: string, deadRuntimeId?: null | string): string | undefined {
-  const cached = _recoveredRuntimeByStoredSessionId.get(storedSessionId)
+/** Take only an attachment that belongs to this exact route and live socket. */
+export function takeRecoveredAttachment(storedSessionId: string, owner: SessionBindingOwner, deadRuntimeId?: string): SessionAttachment | undefined {
+  const key = recoveryKey(storedSessionId, owner)
+  const cached = _recoveredRuntimeByStoredSessionId.get(key)
 
-  if (cached === undefined) {
+  _recoveredRuntimeByStoredSessionId.delete(key)
+
+  return typeof cached === 'object' && cached.runtimeId !== deadRuntimeId && cached.isCurrent() ? cached : undefined
+}
+
+/** Compatibility for callers that have no exact connection/profile, outside Webapp. */
+export function takeRecoveredRuntime(storedSessionId: string, deadRuntimeId?: null | string): string | undefined {
+  if (isBrowserHostedDesktop()) {
     return undefined
   }
 
+  const cached = _recoveredRuntimeByStoredSessionId.get(storedSessionId)
+
   _recoveredRuntimeByStoredSessionId.delete(storedSessionId)
 
-  return deadRuntimeId && cached === deadRuntimeId ? undefined : cached
+  return typeof cached === 'string' && cached !== deadRuntimeId ? cached : undefined
 }
 
 /** Test seam: reset all module-level single-flight/recovery state. */

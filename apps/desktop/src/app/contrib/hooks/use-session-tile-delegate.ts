@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react'
 
+import { sameSessionBindingOwner, sessionAttachment, type SessionAttachment } from '@/api/session-attachment'
 import {
   extendRefreshPageToOverlap,
   graftRefreshedTailOntoBackfill,
@@ -213,10 +214,14 @@ export function useSessionTileDelegate({
 
     // Repoint the stored -> runtime mapping at the recovered id so subsequent
     // tile actions use the live binding instead of re-recovering every call.
-    const rebindTileRuntime = (deadRuntimeId: string) => (recoveredId: string) => {
+    const rebindTileRuntime = (deadRuntimeId: string) => (recoveredId: string, attachment?: SessionAttachment) => {
       const storedId = storedSessionIdForRuntime(deadRuntimeId)
 
       if (storedId) {
+        if (attachment) {
+          updateSessionState(recoveredId, state => state, storedId, attachment)
+        }
+
         runtimeIdByStoredSessionIdRef.current.set(storedId, recoveredId)
       }
     }
@@ -388,9 +393,9 @@ export function useSessionTileDelegate({
           liveId => routedRequest('session.interrupt', { session_id: liveId }),
           {
             requestGateway: routedRequest,
-            onRecovered: recoveredId => {
+            onRecovered: (recoveredId, attachment) => {
               markSessionRecentlyInterrupted(recoveredId)
-              rebindTileRuntime(runtimeId)(recoveredId)
+              rebindTileRuntime(runtimeId)(recoveredId, attachment)
             }
           }
         )
@@ -401,7 +406,15 @@ export function useSessionTileDelegate({
         const existing = boundTileRuntimeId(runtimeIdByStoredSessionIdRef, storedSessionId)
 
         const tile = $sessionTiles.get().find(candidate => candidate.storedSessionId === storedSessionId)
-        const cached = existing ? sessionStateByRuntimeIdRef.current.get(existing) : undefined
+        const existingState = existing ? sessionStateByRuntimeIdRef.current.get(existing) : undefined
+        const tileRoute = tile?.ownerRoute
+
+        const foreignCached = Boolean(existingState?.transcriptOwner && tileRoute &&
+          !sameSessionBindingOwner(existingState.transcriptOwner, {
+            connectionId: tileRoute.connectionId, profile: tileRoute.targetProfile ?? tileRoute.profile
+          }))
+
+        const cached = foreignCached ? undefined : existingState
         const resumeRequestBaselineMessages = cached?.messages ?? []
         const refreshTranscript = options?.refreshTranscript === true
         const authoritativeSnapshot = options?.authoritativeSnapshot === true
@@ -496,7 +509,7 @@ export function useSessionTileDelegate({
                   omit_messages: !authoritativeSnapshot,
                   ...(owner ? { profile: typeof owner === 'string' ? owner : owner.profile } : {})
                 }),
-              { requiresMessages: authoritativeSnapshot, scope: attachOwner }
+              { requiresMessages: authoritativeSnapshot, scope: profileScopeForSessionOwner(attachOwner) }
             )
           },
           async () => {
@@ -536,6 +549,7 @@ export function useSessionTileDelegate({
         }
 
         const resumed = outcome.resumed
+        const attachment = sessionAttachment(resumed)
 
         const runtimeId = resumed?.session_id
 
@@ -547,7 +561,12 @@ export function useSessionTileDelegate({
         // this read sees its durable reply. Otherwise the attached socket can
         // deliver its completion while the read is pending.
         const liveAtRead = states.get(runtimeId)
-        const baseline = liveAtRead?.messages.length ? liveAtRead.messages : resumeRequestBaselineMessages
+
+        const foreignRuntime = Boolean(attachment && liveAtRead &&
+          !sameSessionBindingOwner(attachment, liveAtRead.transcriptOwner))
+
+        const scopedBaseline = foreignRuntime ? [] : resumeRequestBaselineMessages
+        const baseline = !foreignRuntime && liveAtRead?.messages.length ? liveAtRead.messages : scopedBaseline
 
         const hydration = authoritativeSnapshot
           ? { kind: 'snapshot' } as const
@@ -584,6 +603,7 @@ export function useSessionTileDelegate({
           currentEpoch === readEpoch + 1
 
         if (
+          attachment?.isCurrent() === false ||
           bindingGeneration.current !== generation ||
           states !== sessionStateByRuntimeIdRef.current ||
           currentTile?.ownerRoute !== tile?.ownerRoute ||
@@ -605,8 +625,8 @@ export function useSessionTileDelegate({
         }
 
         if (
-          hydration.kind === 'failed' && !currentState?.messages.length &&
-          !resumeRequestBaselineMessages.length && !resumed.messages?.length
+          hydration.kind === 'failed' && (foreignRuntime || !currentState?.messages.length) &&
+          !scopedBaseline.length && !resumed.messages?.length
         ) {
           throw new Error('Could not load the session transcript')
         }
@@ -616,17 +636,17 @@ export function useSessionTileDelegate({
         updateSessionState(
           runtimeId,
           state => {
-            const previousMessages = state.messages.length > 0 ? state.messages : resumeRequestBaselineMessages
+            const previousMessages = state.messages.length > 0 ? state.messages : scopedBaseline
 
             const messages = authoritativeSnapshot
               ? resumed.messages.length > 0
                 ? overlayConcurrentMessageChanges(
                     mergeTileTranscript(
-                      resumeRequestBaselineMessages,
+                      scopedBaseline,
                       toChatMessages(resumed.messages),
                       cached?.streamId
                     ),
-                    resumeRequestBaselineMessages,
+                    scopedBaseline,
                     previousMessages
                   )
                 : previousMessages
@@ -669,7 +689,8 @@ export function useSessionTileDelegate({
               messages
             }
           },
-          storedSessionId
+          storedSessionId,
+          attachment
         )
 
         return runtimeId
@@ -710,9 +731,9 @@ export function useSessionTileDelegate({
           liveId => routedRequest('prompt.submit', { session_id: liveId, text }, PROMPT_SUBMIT_REQUEST_TIMEOUT_MS),
           {
             requestGateway: routedRequest,
-            onRecovered: recoveredId => {
+            onRecovered: (recoveredId, attachment) => {
               acceptedRuntimeId = recoveredId
-              rebindTileRuntime(runtimeId)(recoveredId)
+              rebindTileRuntime(runtimeId)(recoveredId, attachment)
             }
           }
         )
@@ -724,7 +745,7 @@ export function useSessionTileDelegate({
           storedSessionId: storedSessionIdForRuntime(acceptedRuntimeId) ?? null
         }
       },
-      updateSession: (runtimeId, updater) => updateSessionState(runtimeId, updater)
+      updateSession: (...args) => updateSessionState(...args)
     })
   }, [
     archiveSession,

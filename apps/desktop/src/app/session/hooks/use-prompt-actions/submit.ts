@@ -1,6 +1,7 @@
 import { type PromptSubmitResult, randomUuid } from '@hermes/shared'
 import { type MutableRefObject, useCallback } from 'react'
 
+import { sameSessionBindingOwner, type SessionAttachment } from '@/api/session-attachment'
 import { getSession, PROMPT_SUBMIT_REQUEST_TIMEOUT_MS } from '@/hermes'
 import { translateNow, type Translations } from '@/i18n'
 import { bindBrowserNotificationAdmission, trackBrowserNotificationTurn } from '@/lib/browser-notification-turns'
@@ -9,6 +10,7 @@ import { optimisticAttachmentRef } from '@/lib/chat-runtime'
 import { sanitizeComposerInput } from '@/lib/composer-input-sanitize'
 import { hostHas } from '@/lib/host-capabilities'
 import { setMutableRef } from '@/lib/mutable-ref'
+import { isBrowserHostedDesktop } from '@/lib/platform'
 import {
   isVoicePlaybackActive,
   markVoicePlaybackInterrupted,
@@ -41,6 +43,7 @@ import {
   setMessages,
   touchSessionActivity
 } from '@/store/session'
+import { isSessionOwnerRoute } from '@/store/session-request-router'
 import { profileScopeForSessionOwner } from '@/store/session-request-router'
 import { $sessionStates, $sessionTiles } from '@/store/session-states'
 import type { SessionInfo } from '@/types/hermes'
@@ -75,6 +78,7 @@ import {
   ownershipErrorSurface,
   refusalDroppedImages,
   releaseSubmitInFlight,
+  resumeRuntimeAttachment,
   SessionRecoveryAborted,
   type SubmitTextOptions,
   withSessionBusyRetry,
@@ -89,7 +93,7 @@ interface SubmitPromptDeps {
   getRoutedStoredSessionId: () => null | string
   getRuntimeIdForStoredSession: (storedSessionId: string) => null | string
   getRouteToken: () => string
-  onRuntimeRecovered?: (runtimeId: string) => void
+  onRuntimeRecovered?: (runtimeId: string, attachment?: SessionAttachment) => void
   requestGateway: GatewayRequest
   runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>>
   resumeStoredSession: (storedSessionId: string) => Promise<void> | void
@@ -102,7 +106,8 @@ interface SubmitPromptDeps {
   updateSessionState: (
     sessionId: string,
     updater: (state: ClientSessionState) => ClientSessionState,
-    storedSessionId?: string | null
+    storedSessionId?: string | null,
+    attachment?: SessionAttachment
   ) => ClientSessionState
   /** Composer-scope seams: the main chat runs on the module-level globals
    *  (defaults); a session tile injects its own so a tile submit never writes
@@ -160,6 +165,7 @@ const MAIN_SUBMIT_SCOPE: NonNullable<SubmitPromptDeps['scope']> = {
 
 export interface ResumedRuntimeBindingDeps {
   activeSessionIdRef: MutableRefObject<string | null>
+  attachment?: SessionAttachment
   paneState?: ClientSessionState
   resumedRuntimeId: string
   sessions: SessionInfo[]
@@ -169,14 +175,20 @@ export interface ResumedRuntimeBindingDeps {
 
 export function rebindPaneToResumedRuntime({
   activeSessionIdRef,
+  attachment,
   paneState,
   resumedRuntimeId,
   sessions,
   storedSessionId,
   updateSessionState
 }: ResumedRuntimeBindingDeps): void {
+  if (attachment && !attachment.isCurrent()) {
+    return
+  }
+
   if (
     paneState?.messages.length &&
+    (!attachment || sameSessionBindingOwner(paneState.transcriptOwner, attachment)) &&
     paneState.storedSessionId &&
     resolveComposerSessionKey(paneState.storedSessionId, sessions) ===
       resolveComposerSessionKey(storedSessionId, sessions)
@@ -186,8 +198,11 @@ export function rebindPaneToResumedRuntime({
     updateSessionState(
       resumedRuntimeId,
       state => (state.messages.length ? state : { ...state, messages: carried }),
-      storedSessionId
+      storedSessionId,
+      attachment
     )
+  } else if (attachment) {
+    updateSessionState(resumedRuntimeId, state => state, storedSessionId, attachment)
   }
 
   activeSessionIdRef.current = resumedRuntimeId
@@ -844,7 +859,16 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
           // exact stored session is reused instead of resuming again.
           const cachedRuntimeId = takeRecoveredRuntime(storedId)
 
-          const resumed = cachedRuntimeId
+          const recovered = isBrowserHostedDesktop()
+            ? await resumeRuntimeAttachment(storedId, {
+              requestGateway,
+              scope: isSessionOwnerRoute(destination.owner) ? destination.owner : undefined
+            })
+            : undefined
+
+          const resumed = isBrowserHostedDesktop()
+            ? recovered && { session_id: recovered.runtimeId }
+            : cachedRuntimeId
             ? { session_id: cachedRuntimeId }
             : await singleFlightSessionResume(storedId, async () => {
                 const resumeProfile = await resolveSessionProfile(storedId)
@@ -865,7 +889,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
             // Keep the freshly-bound runtime findable for the next action on
             // this stored session instead of stranding it for the reaper.
             if (resumed?.session_id) {
-              registerRecoveredRuntime(storedId, resumed.session_id)
+              registerRecoveredRuntime(storedId, resumed.session_id, recovered?.attachment)
             }
 
             return abortForSessionSwitch(resumedSessionId)
@@ -882,6 +906,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
               // only a lineage-matched transcript before moving the pane.
               rebindPaneToResumedRuntime({
                 activeSessionIdRef,
+                attachment: recovered?.attachment,
                 paneState:
                   paneRuntimeId && paneRuntimeId !== resumedSessionId ? $sessionStates.get()[paneRuntimeId] : undefined,
                 resumedRuntimeId: resumedSessionId,
@@ -889,6 +914,8 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
                 storedSessionId: storedId,
                 updateSessionState
               })
+            } else if (recovered?.attachment) {
+              updateSessionState(resumedSessionId, state => state, storedId, recovered.attachment)
             }
           }
         } catch {
@@ -1193,17 +1220,18 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
               }),
             {
               requestGateway,
+              scope: isSessionOwnerRoute(destination.owner) ? destination.owner : undefined,
               driftReason: sessionDriftReason,
-              onRecovered: recoveredId => {
+              onRecovered: (recoveredId, attachment) => {
                 if (onRuntimeRecovered) {
-                  onRuntimeRecovered(recoveredId)
+                  onRuntimeRecovered(recoveredId, attachment)
                 } else {
                   // Publish stored-to-runtime ownership before retrying the
                   // session-scoped request. The window router needs this
                   // binding to keep a recovered remote runtime on the gateway
                   // that owns its durable session.
                   if (recoverStoredSessionId) {
-                    updateSessionState(recoveredId, state => state, recoverStoredSessionId)
+                    updateSessionState(recoveredId, state => state, recoverStoredSessionId, attachment)
                   }
 
                   if (targetIsCurrentView()) {

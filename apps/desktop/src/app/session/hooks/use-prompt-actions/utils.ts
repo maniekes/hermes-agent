@@ -1,15 +1,19 @@
 import type { AppendMessage } from '@assistant-ui/react'
 import { JsonRpcGatewayError } from '@hermes/shared'
 
+import { sameSessionBindingOwner, sessionAttachment, type SessionAttachment } from '@/api/session-attachment'
 import { translateNow, type Translations } from '@/i18n'
 import type { ChatMessage } from '@/lib/chat-messages'
 import { isReadFileErrorResult } from '@/lib/desktop-fs'
 import { type CommandsCatalogLike, filterDesktopCommandsCatalog } from '@/lib/desktop-slash-commands'
 import type { ErrorSurface } from '@/lib/error-surface'
+import { isBrowserHostedDesktop } from '@/lib/platform'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
 import type { ComposerAttachment } from '@/store/composer'
+import { isSessionOwnerRoute, requestForSessionProfile, type SessionOwnerRoute } from '@/store/session-request-router'
+import { $sessionStates } from '@/store/session-states'
 
-import { registerRecoveredRuntime, singleFlightSessionResume, takeRecoveredRuntime } from './single-flight-resume'
+import { registerRecoveredRuntime, singleFlightSessionResume, takeRecoveredAttachment, takeRecoveredRuntime } from './single-flight-resume'
 import type { SubmissionDestination } from './submission-destination'
 
 export type GatewayRequest = <T>(method: string, params?: Record<string, unknown>, timeoutMs?: number) => Promise<T>
@@ -94,7 +98,8 @@ export interface SessionRecoveryDeps {
    * pointing at the dead runtime and every atom-reading surface desyncs
    * (#62471).
    */
-  onRecovered?: (liveSessionId: string) => void
+  onRecovered?: (liveSessionId: string, attachment?: SessionAttachment) => void
+  scope?: SessionOwnerRoute
   /**
    * Non-null reason ⇒ abort instead of retrying. Evaluated AFTER the resume
    * and BEFORE the retry, because the resume is the slow await during which a
@@ -119,23 +124,52 @@ export async function resumeStoredRuntimeSession(
   storedSessionId: string,
   deps: SessionRecoveryDeps
 ): Promise<null | string> {
-  // Single-flight per stored id: after a reconnect many surfaces discover the
-  // same dead runtime at once, and each independent session.resume mints a new
-  // runtime — every loser is an orphan for the reaper. Sharing one in-flight
-  // promise makes concurrent recoveries converge on ONE runtime.
+  return (await resumeRuntimeAttachment(storedSessionId, deps))?.runtimeId ?? null
+}
+
+export async function resumeRuntimeAttachment(storedSessionId: string, deps: SessionRecoveryDeps, deadRuntimeId?: string) {
+  const browser = isBrowserHostedDesktop()
+
+  const owner = deps.scope ?? (browser
+    ? await import('../use-session-actions/utils').then(module => module.resolveSessionOwner(storedSessionId))
+    : undefined)
+
+  const exact = isSessionOwnerRoute(owner) ? owner : undefined
+  const scope = exact ? { connectionId: exact.connectionId, profile: exact.targetProfile ?? exact.profile } : undefined
+
+  if (browser && !scope) {
+    throw new Error('Cannot recover a session without its exact route')
+  }
+
+  const cached = scope && takeRecoveredAttachment(storedSessionId, scope, deadRuntimeId)
+
+  if (cached) {
+    return { runtimeId: cached.runtimeId, attachment: cached }
+  }
+
   const resumed = await singleFlightSessionResume(storedSessionId, async () => {
     const resolveProfile = deps.resolveProfile ?? defaultResolveProfile
-    const profile = await resolveProfile(storedSessionId)
+    const profile = scope?.profile ?? await resolveProfile(storedSessionId)
 
-    return deps.requestGateway<{ session_id: string }>('session.resume', {
+    const params = {
       session_id: storedSessionId,
       source: 'desktop',
       omit_messages: true,
       ...(profile ? { profile } : {})
-    })
-  })
+    }
 
-  return resumed?.session_id ?? null
+    return browser
+      ? requestForSessionProfile<{ session_id: string }>(exact, deps.requestGateway, 'session.resume', params)
+      : deps.requestGateway<{ session_id: string }>('session.resume', params)
+  }, { scope })
+
+  const attachment = sessionAttachment(resumed)
+
+  if (browser && (!scope || !attachment?.isCurrent() || attachment.connectionId !== scope.connectionId || attachment.profile !== scope.profile)) {
+    throw new Error('Recovered session belongs to a different route')
+  }
+
+  return resumed?.session_id ? { runtimeId: resumed.session_id, attachment } : undefined
 }
 
 /**
@@ -162,6 +196,9 @@ export async function withSessionNotFoundResume<T>(
   deps: SessionRecoveryDeps,
   options?: { alsoTimeout?: boolean }
 ): Promise<{ recovered: boolean; result: T; sessionId: string }> {
+  const initialBinding = isBrowserHostedDesktop() ? $sessionStates.get()[sessionId] : undefined
+  const scope = deps.scope ?? initialBinding?.transcriptOwner
+
   try {
     return { recovered: false, result: await call(sessionId), sessionId }
   } catch (err) {
@@ -202,30 +239,38 @@ export async function withSessionNotFoundResume<T>(
       }
     }
 
-    let recoveredId: null | string
+    let recovered: Awaited<ReturnType<typeof resumeRuntimeAttachment>>
 
     try {
-      recoveredId = await resumeStoredRuntimeSession(storedSessionId, deps)
+      recovered = await resumeRuntimeAttachment(storedSessionId, { ...deps, scope }, sessionId)
     } catch {
       throw err
     }
 
-    if (!recoveredId) {
+    if (!recovered) {
       throw err
     }
 
-    const drift = deps.driftReason?.()
+    const { runtimeId: recoveredId, attachment } = recovered
+    const currentBinding = initialBinding && $sessionStates.get()[sessionId]
+
+    const bindingChanged = initialBinding && (
+      !currentBinding || currentBinding.storedSessionId !== initialBinding.storedSessionId ||
+      !sameSessionBindingOwner(currentBinding.transcriptOwner, initialBinding.transcriptOwner)
+    )
+
+    const drift = deps.driftReason?.() || (bindingChanged ? 'session binding changed' : null)
 
     if (drift) {
       // Do NOT abandon the freshly-minted runtime: adoption is wrong here
       // (the user moved on), so record it in the stored->runtime recovery
       // cache. The next action targeting this stored session reuses it
       // instead of minting another orphan (#91276).
-      registerRecoveredRuntime(storedSessionId, recoveredId)
+      registerRecoveredRuntime(storedSessionId, recoveredId, attachment)
       throw new SessionRecoveryAborted(drift, recoveredId)
     }
 
-    deps.onRecovered?.(recoveredId)
+    deps.onRecovered?.(recoveredId, attachment)
 
     return { recovered: true, result: await call(recoveredId), sessionId: recoveredId }
   }

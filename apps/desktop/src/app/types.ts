@@ -1,5 +1,6 @@
 import type * as React from 'react'
 
+import type { SessionBindingOwner } from '@/api/session-attachment'
 import type { ChatMessage } from '@/lib/chat-messages'
 import type { Tiered } from '@/store/interface-mode'
 import type { SessionMessage, UsageStats } from '@/types/hermes'
@@ -150,6 +151,7 @@ export interface PersistedDisplayTranscriptProvenance {
 
 export interface ClientSessionState {
   storedSessionId: string | null
+  transcriptOwner?: SessionBindingOwner
   transcriptAuthorityEpoch?: number
   transcriptProvenance?: PersistedDisplayTranscriptProvenance
   messages: ChatMessage[]

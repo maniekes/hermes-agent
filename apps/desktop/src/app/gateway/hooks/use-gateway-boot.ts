@@ -10,6 +10,7 @@ import {
 import { useEffect, useRef } from 'react'
 
 import { canonicalOwnerProfile } from '@/api/canonical-protocol'
+import { isCronReportFrame } from '@/api/session-attachment'
 import { createGatewayEventDedupe } from '@/app/gateway/gateway-event-dedupe'
 import { reportStartupLatency } from '@/app/gateway/report-startup-latency'
 import { shouldApplyPostBootProgressError } from '@/components/boot-failure-reauth'
@@ -41,7 +42,6 @@ import { noteBackendDrop, noteBackendExited } from '@/store/desktop-metrics'
 import {
   $gateway,
   activeGateway,
-  activeGatewayConnectionId,
   closeLegacySecondaryGateways,
   closeSecondaryGateways,
   configureGatewayRegistry,
@@ -563,7 +563,7 @@ export function useGatewayBoot({
           return
         }
 
-        await gateway.connect(wsUrl)
+        await gateway.connect(wsUrl, conn.connectionId)
 
         if (cancelled) {
           return
@@ -926,7 +926,7 @@ export function useGatewayBoot({
           return
         }
 
-        await gateway.connect(wsUrl)
+        await gateway.connect(wsUrl, conn.connectionId)
 
         if (!ownsSwitch()) {
           return
@@ -1221,8 +1221,14 @@ export function useGatewayBoot({
         recordConnectionWire(primaryWireSource($primaryGatewayRoute.get(), $connection.get()), gateway.sessionWire)
       }
 
-      const connectionId = activeGatewayConnectionId()
-      const sourceProfile = canonicalOwnerProfile(event) ?? sourceProfileNow()
+      const connectionId = gateway.sourceConnectionId ?? $primaryGatewayRoute.get().connectionId
+      const canonicalProfile = canonicalOwnerProfile(event)
+
+      if (isCronReportFrame(event) && (!canonicalProfile || !gateway.sourceConnectionId)) {
+        return
+      }
+
+      const sourceProfile = canonicalProfile ?? sourceProfileNow()
 
       const scopedEvent = {
         ...event,
@@ -1611,7 +1617,7 @@ export function useGatewayBoot({
           // retryable boot failure (stage 'dialing') so the bounded boot-retry
           // loop below re-runs the whole handshake — including a fresh
           // getConnection() against a possibly-rebuilt tunnel.
-          await gateway.connect(wsUrl)
+          await gateway.connect(wsUrl, conn.connectionId)
         } else {
           // LOCAL retries the dial across backend cold-start (#49645): main's
           // readiness probe already passed, but a freshly spawned backend can
@@ -1632,7 +1638,7 @@ export function useGatewayBoot({
                   'Timed out minting the gateway WebSocket URL'
                 ))
 
-              await gateway.connect(url)
+              await gateway.connect(url, conn.connectionId)
             },
             isCancelled: () => cancelled,
             initialUrl: wsUrl

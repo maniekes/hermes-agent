@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { group } from '@/components/pane-shell/tree/model'
 import { $layoutTree, noteActiveTreeGroup } from '@/components/pane-shell/tree/store'
-import type { ChatMessage } from '@/lib/chat-messages'
+import { type ChatMessage, textPart } from '@/lib/chat-messages'
 import { purgeInFlightTurnJournals, resetInFlightTurnJournalStateForTests } from '@/lib/inflight-turn-journal'
 import { $activeGatewayProfile } from '@/store/profile'
 import {
@@ -88,6 +88,45 @@ describe('useSessionStateCache — stored-id rotation provenance', () => {
     })
     expect(cache.runtimeIdByStoredSessionIdRef.current.has('stored-A')).toBe(false)
     expect(cache.runtimeIdByStoredSessionIdRef.current.get('stored-A-next')).toBe('runtime-A')
+  })
+
+  it('replaces rows and pending state on an owner change and rejects a late callback', () => {
+    let cache!: Cache
+    const runtimeId = 'shared-runtime'
+    const storedId = 'shared-stored'
+    const alpha = { connectionId: 'local', profile: 'alpha', runtimeId, isCurrent: () => true }
+    const beta = { ...alpha, profile: 'beta' }
+    const lateAlpha = { ...alpha, isCurrent: () => false }
+    const oldMessage: ChatMessage = { id: 'old', role: 'user', parts: [textPart('old synthetic row')] }
+
+    setActiveSessionId(runtimeId)
+    setSelectedStoredSessionId(storedId)
+    render(<Harness activeSessionId={runtimeId} onReady={value => (cache = value)} selectedStoredSessionId={storedId} />)
+
+    act(() => {
+      cache.updateSessionState(runtimeId, state => ({
+        ...state, messages: [oldMessage], busy: true, awaitingResponse: true, turnAdmissionId: 'old-admission'
+      }), storedId, alpha)
+    })
+    const previous = $sessionStates.get()[runtimeId]
+
+    act(() => {
+      cache.updateSessionState(runtimeId, state => state, storedId, beta)
+    })
+    const next = $sessionStates.get()[runtimeId]
+    expect(next).toMatchObject({
+      transcriptOwner: { connectionId: 'local', profile: 'beta' },
+      messages: [],
+      busy: false,
+      awaitingResponse: false
+    })
+    expect(next.turnAdmissionId).toBeFalsy()
+    expect(next.transcriptAuthorityEpoch).toBeGreaterThan(previous.transcriptAuthorityEpoch ?? 0)
+
+    act(() => {
+      cache.updateSessionState(runtimeId, state => ({ ...state, messages: [oldMessage] }), storedId, lateAlpha)
+    })
+    expect($sessionStates.get()[runtimeId]).toBe(next)
   })
 
   it('does not publish a foreground-navigation event for a background runtime rotation', () => {

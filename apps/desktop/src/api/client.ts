@@ -12,6 +12,7 @@ import type { HermesApiRequest } from '@/global'
 
 import { CanonicalDesktopProtocol, canonicalProfile, canonicalPromptParams, canonicalSessionKey, openGatewaySocket, recordCanonicalOwner, splitRewindSubmit } from './canonical-protocol'
 import { DialReadiness, GATEWAY_NOT_CONNECTED_MESSAGE, remainingRequestBudget } from './dial-readiness'
+import { isCronReportFrame, recordSessionAttachment } from './session-attachment'
 
 // Desktop startup fires a burst of read-only data calls (config, profiles,
 // model info/options, cron) the moment the backend passes readiness. On a
@@ -94,6 +95,9 @@ export type GatewaySessionWire = 'canonical' | 'legacy'
 
 export class HermesGateway extends JsonRpcGatewayClient {
   private canonical = false
+  private socketConnectionId: string | undefined
+
+  get sourceConnectionId(): string | undefined { return this.socketConnectionId }
   private nativeDial = false
   private readonly readiness = new DialReadiness(() => super.connectionState === 'open')
   private readonly protocol = new CanonicalDesktopProtocol()
@@ -277,6 +281,10 @@ export class HermesGateway extends JsonRpcGatewayClient {
     const owner = event.replay_epoch ? this.replayProfiles.get(event.replay_epoch) : undefined
     const profiles = this.sessionProfiles.get(event.session_id)
 
+    if (isCronReportFrame(event) && owner?.sessionId !== event.session_id) {
+      return false
+    }
+
     let profile = owner?.sessionId === event.session_id ? owner.profile : this.eventRoutes.get(event) ??
       (profiles?.size === 1 ? profiles.values().next().value : profiles?.size ? undefined : 'default')
 
@@ -351,9 +359,10 @@ export class HermesGateway extends JsonRpcGatewayClient {
     }
   }
 
-  override async connect(wsUrl: string): Promise<void> {
+  override async connect(wsUrl: string, connectionId?: string | null): Promise<void> {
     if (this.connectionState === 'open' || this.connectionState === 'connecting') { return this.readiness.promise }
     const generation = ++this.connectionGeneration
+    this.socketConnectionId = connectionId?.trim() || undefined
     this.nativeDial = new URL(wsUrl).searchParams.has('native_dial')
     this.canonical = this.nativeDial
     this.attached.clear()
@@ -491,6 +500,20 @@ export class HermesGateway extends JsonRpcGatewayClient {
 
       if (method === 'session.resume' || method === 'session.create' || method === 'session.activate') {
         this.adoptAttachedSnapshot(settled as { session_id?: string; prompts?: Array<Record<string, unknown>> }, prepared.profile)
+      }
+
+      if (['session.resume', 'session.create', 'session.activate', 'session.branch',
+        'session.branch_stored', 'session.branch_whole'].includes(method) && this.socketConnectionId) {
+        const runtimeId = (settled as { session_id?: unknown })?.session_id
+
+        if (typeof runtimeId === 'string' && runtimeId) {
+          recordSessionAttachment(settled as object, {
+            connectionId: this.socketConnectionId,
+            profile: canonicalProfile(prepared.profile),
+            runtimeId,
+            isCurrent: () => generation === this.connectionGeneration && this.connectionState === 'open'
+          })
+        }
       }
 
       return settled

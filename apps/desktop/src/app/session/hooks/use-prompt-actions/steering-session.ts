@@ -1,5 +1,6 @@
 import type { MutableRefObject } from 'react'
 
+import type { SessionAttachment } from '@/api/session-attachment'
 import { findStoredIdForRuntimeId } from '@/app/contrib/wiring-routing'
 import type { ClientSessionState } from '@/app/types'
 import { $activeSessionStoredIdRotation, $sessions, idsShareLineage, setActiveSessionId } from '@/store/session'
@@ -17,7 +18,8 @@ interface SteeringSessionDeps {
   updateSessionState: (
     sessionId: string,
     updater: (state: ClientSessionState) => ClientSessionState,
-    storedSessionId?: string | null
+    storedSessionId?: string | null,
+    attachment?: SessionAttachment
   ) => ClientSessionState
 }
 
@@ -95,10 +97,10 @@ export function captureSteeringSession(deps: SteeringSessionDeps) {
     storedSessionId,
     requestGateway,
     resolveProfile: owner ? async () => (typeof owner === 'string' ? owner : owner.profile) : undefined,
-    onRecovered: (recoveredId: string) => {
+    onRecovered: (recoveredId: string, attachment?: SessionAttachment) => {
       // Both visible redirect and hidden steer need the binding BEFORE retry:
       // hidden steer has no optimistic row to establish it incidentally.
-      deps.updateSessionState(recoveredId, state => state, storedSessionId)
+      deps.updateSessionState(recoveredId, state => state, storedSessionId, attachment)
 
       // The correction still belongs to its source when navigation backgrounds
       // it. Keep its recovery, but only the unchanged view may adopt its id.

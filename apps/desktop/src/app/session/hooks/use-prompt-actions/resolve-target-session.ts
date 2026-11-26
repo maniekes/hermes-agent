@@ -1,7 +1,9 @@
+import { isBrowserHostedDesktop } from '@/lib/platform'
+
 import { resolveSessionProfile } from '../use-session-actions/utils'
 
 import { singleFlightSessionResume, takeRecoveredRuntime } from './single-flight-resume'
-import type { GatewayRequest } from './utils'
+import { type GatewayRequest, resumeStoredRuntimeSession } from './utils'
 
 /**
  * Resolve the runtime session a submit or slash command must target.
@@ -90,6 +92,10 @@ export async function resolveTargetSessionId(deps: ResolveTargetSessionDeps): Pr
 
   if (storedTarget) {
     try {
+      if (isBrowserHostedDesktop()) {
+        return await resumeStoredRuntimeSession(storedTarget, { requestGateway })
+      }
+
       // Reuse a runtime an aborted recovery already minted for this stored
       // session; otherwise resume once, shared across concurrent callers.
       const cachedRuntimeId = takeRecoveredRuntime(storedTarget)

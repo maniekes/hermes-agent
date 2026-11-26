@@ -1,6 +1,7 @@
 import { useStore } from '@nanostores/react'
 import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 
+import { sameSessionBindingOwner, type SessionAttachment } from '@/api/session-attachment'
 import { PRIMARY_SESSION_VIEW } from '@/app/chat/session-view'
 import type { ChatMessage } from '@/lib/chat-messages'
 import { preserveLocalAssistantErrors } from '@/lib/chat-messages'
@@ -418,15 +419,32 @@ export function useSessionStateCache({
     (
       sessionId: string,
       updater: (state: ClientSessionState) => ClientSessionState,
-      storedSessionId?: string | null
+      storedSessionId?: string | null,
+      attachment?: SessionAttachment
     ) => {
-      const previous = ensureSessionState(sessionId, storedSessionId)
+      const cached = sessionStateCache.get(sessionId)
+
+      if (attachment && (!attachment.isCurrent() || attachment.runtimeId !== sessionId)) {
+        return cached ?? createClientSessionState(storedSessionId ?? null)
+      }
+
+      const owner = attachment && { connectionId: attachment.connectionId, profile: attachment.profile }
+      const replace = Boolean(owner && cached && !sameSessionBindingOwner(owner, cached.transcriptOwner))
+
+      const previous = replace
+        ? {
+          ...createClientSessionState(storedSessionId ?? null),
+          transcriptAuthorityEpoch: (cached?.transcriptAuthorityEpoch ?? 0) + 1
+        }
+        : ensureSessionState(sessionId, storedSessionId)
+
+      const bound = owner ? { ...previous, transcriptOwner: owner } : previous
       // Give the updater the raw previous state so it can return the same
       // reference when nothing changed (the caller sees a no-op). Previously
       // the param was always a fresh spread, so every call looked like a
       // change — including periodic ~1/s session.info heartbeats that churn
       // $sessionStates and its computed atoms on every tick.
-      const next = updater(previous)
+      const next = updater(bound)
 
       // If the updater returned the same reference, nothing changed for this
       // session — skip the store write, publishSessionState, and view sync.
@@ -435,6 +453,15 @@ export function useSessionStateCache({
       // cache, so stale reads don't regress.
       if (next === previous) {
         return previous
+      }
+
+      if (replace && cached?.storedSessionId &&
+          runtimeIdByStoredSessionIdRef.current.get(cached.storedSessionId) === sessionId) {
+        runtimeIdByStoredSessionIdRef.current.delete(cached.storedSessionId)
+      }
+
+      if (replace && next.storedSessionId) {
+        runtimeIdByStoredSessionIdRef.current.set(next.storedSessionId, sessionId)
       }
 
       sessionStateCache.set(sessionId, next)

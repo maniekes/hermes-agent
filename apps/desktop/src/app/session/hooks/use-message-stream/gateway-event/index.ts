@@ -1,6 +1,7 @@
 import { type GatewayEvent, registryBackendScopeKey } from '@hermes/shared'
 import { useCallback, useEffect, useRef } from 'react'
 
+import { sameSessionBindingOwner } from '@/api/session-attachment'
 import type { GatewayEventPayload } from '@/lib/chat-messages'
 import { acceptExecutionEvent, executionAdmission } from '@/lib/execution-authority'
 import {
@@ -231,6 +232,17 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
       }
 
       const sessionId = route.sessionId
+
+      // A cron report travels with session.info metadata. Reject the entire
+      // foreign snapshot before execution, pending or transcript reducers.
+      if (event.type === 'session.info' && payload?.cron_report && sessionId) {
+        const owner = deps.sessionStateByRuntimeIdRef.current.get(sessionId)?.transcriptOwner
+
+        if (!owner || !event.connectionId || !event.profile ||
+          !sameSessionBindingOwner(owner, { connectionId: event.connectionId, profile: event.profile })) {
+          return
+        }
+      }
 
       if (!admitExecutionEvent(executionAuthorities.current, event, sessionId, deps)) {
         return

@@ -1,3 +1,4 @@
+import type { AppendMessage, ThreadMessage } from '@assistant-ui/react'
 /**
  * Shared rewind/interrupt core for the prompt verbs — the ONE implementation
  * of the submit primitive + the pure message math behind cancel / reload /
@@ -8,10 +9,9 @@
  * `ChatMessage[]`, optimistic transforms map a `ClientSessionState` to the next
  * — so each caller keeps its own state-write + error-handling wiring.
  */
-
-import type { AppendMessage, ThreadMessage } from '@assistant-ui/react'
 import { JsonRpcGatewayError, randomUuid } from '@hermes/shared'
 
+import type { SessionAttachment } from '@/api/session-attachment'
 import type { ClientSessionState } from '@/app/types'
 import { PROMPT_SUBMIT_REQUEST_TIMEOUT_MS } from '@/hermes'
 import { bindBrowserNotificationAdmission, trackBrowserNotificationTurn } from '@/lib/browser-notification-turns'
@@ -284,7 +284,11 @@ export async function runRewindSubmit(
   truncateOrdinal: number | undefined,
   truncateMessageId: string | undefined,
   interruptFirst: boolean,
-  recovery?: { storedSessionId?: null | string; onSessionRecovered?: (sessionId: string) => void },
+  recovery?: {
+    storedSessionId?: null | string
+    driftReason?: () => string | null
+    onSessionRecovered?: (sessionId: string, attachment?: SessionAttachment) => void
+  },
   truncateRowId?: number,
   sourceText?: string,
   rebindRowIds?: readonly number[],
@@ -417,9 +421,10 @@ export async function runRewindSubmit(
       submitFor,
       {
         requestGateway,
-        onRecovered: recoveredId => {
+        driftReason: recovery?.driftReason,
+        onRecovered: (recoveredId, attachment) => {
           liveSessionId = recoveredId
-          recovery?.onSessionRecovered?.(recoveredId)
+          recovery?.onSessionRecovered?.(recoveredId, attachment)
         }
       }
     )

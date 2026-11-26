@@ -11,6 +11,7 @@ import {
 import { atom, batch } from 'nanostores'
 
 import { canonicalOwnerProfile } from '@/api/canonical-protocol'
+import { isCronReportFrame } from '@/api/session-attachment'
 import type { HermesConnection } from '@/global'
 import { HermesGateway } from '@/hermes'
 import { translateNow } from '@/i18n'
@@ -715,7 +716,7 @@ async function openSecondary(entry: Secondary): Promise<void> {
     )
 
     try {
-      await entry.gateway.connect(wsUrl)
+      await entry.gateway.connect(wsUrl, entry.connectionId ?? conn.connectionId)
     } catch (error) {
       // Log the dial target for support, but RETHROW THE ORIGINAL ERROR —
       // reconnectSecondary classifies failures by message ("No connection
@@ -977,7 +978,16 @@ function createSecondary(profile: string, connectionId: null | string = null): S
   // never promote an arbitrary wire `profile` field into ownership.
   entry.offEvent = gateway.onEvent(event => {
     if (event.type === 'gateway.ready') { recordSecondaryWire(connectionId, entry.connection, gateway.sessionWire) }
-    const scopedEvent = stampSecondaryProfileOwner({ ...event, ...(connectionId ? { connectionId } : {}) }, canonicalOwnerProfile(event) ?? profile)
+    const canonicalProfile = canonicalOwnerProfile(event)
+
+    if (isCronReportFrame(event) && (!canonicalProfile || !gateway.sourceConnectionId)) { return }
+
+    const sourceConnectionId = gateway.sourceConnectionId ?? connectionId
+
+    const scopedEvent = stampSecondaryProfileOwner(
+      { ...event, ...(sourceConnectionId ? { connectionId: sourceConnectionId } : {}) },
+      canonicalProfile ?? profile
+    )
 
     g.config?.onEvent(scopedEvent)
     releaseTerminalTurnLease(entry.scope, event)
