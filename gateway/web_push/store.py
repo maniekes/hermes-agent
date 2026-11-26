@@ -29,7 +29,8 @@ CREATE TABLE IF NOT EXISTS web_push_subscriptions (
     updated_at REAL NOT NULL,
     grant INTEGER NOT NULL DEFAULT 0,
     profile_grant INTEGER NOT NULL DEFAULT 0,
-    preview INTEGER NOT NULL DEFAULT 0
+    preview INTEGER NOT NULL DEFAULT 0,
+    authority_owner TEXT
 );
 CREATE TABLE IF NOT EXISTS web_push_outbox (
     id TEXT PRIMARY KEY,
@@ -47,6 +48,7 @@ GRACE_SECONDS = 3
 TTL_SECONDS = 3600
 PREVIEW_TITLE_SOURCE_LIMIT = 4096
 PREVIEW_ANSWER_SOURCE_LIMIT = 16384
+_FAILURE_PREVIEW = "The response could not be completed."
 
 
 def device_grant(conn, device):
@@ -114,7 +116,8 @@ def set_preview(conn, row, preview):
     return bool(saved["preview"]) if saved is not None else None
 
 
-def subscribe(conn, device, owner, login, vapid, endpoint, sealed, now, *, material='', grant=0, profile_grant=0):
+def subscribe(conn, device, owner, login, vapid, endpoint, sealed, now, *, material='', grant=0, profile_grant=0,
+              authority_owner=None):
     current = conn.execute("SELECT * FROM web_push_subscriptions WHERE device=?", (device,)).fetchone()
     if current is not None and ((current["grant"], current["profile_grant"]) > (grant, profile_grant) or (
         current["grant"] == grant and current["owner"] != owner
@@ -127,15 +130,15 @@ def subscribe(conn, device, owner, login, vapid, endpoint, sealed, now, *, mater
         same = (current["login"], current["vapid"], current["endpoint"], current["material"],
                 current["grant"], current["profile_grant"]) == (login, vapid, endpoint, material, grant, profile_grant)
         if same:
-            conn.execute("UPDATE web_push_subscriptions SET sealed=?, updated_at=? WHERE device=?",
-                         (sealed, now, device))
+            conn.execute("UPDATE web_push_subscriptions SET sealed=?, updated_at=?, authority_owner=? WHERE device=?",
+                         (sealed, now, authority_owner, device))
             return current["version"]
         retire(conn, device, current["version"])
     version = uuid4().hex
     conn.execute("""INSERT INTO web_push_subscriptions
-                    (device,owner,login,vapid,endpoint,version,material,sealed,updated_at,grant,profile_grant)
-                    VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
-                 (device, owner, login, vapid, endpoint, version, material, sealed, now, grant, profile_grant))
+                    (device,owner,login,vapid,endpoint,version,material,sealed,updated_at,grant,profile_grant,authority_owner)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                 (device, owner, login, vapid, endpoint, version, material, sealed, now, grant, profile_grant, authority_owner))
     return version
 
 
@@ -171,7 +174,7 @@ def annotate(conn, row):
 
 
 def settled(conn, row, outcome):
-    if outcome != "completed":
+    if outcome not in {"completed", "failed"}:
         return
     if not conn.execute("SELECT 1 FROM web_push_outbox WHERE id=?", (row["admission_id"],)).fetchone():
         return
@@ -264,11 +267,24 @@ def dispatch_preview(conn, row):
 def preview_source(conn, row):
     from hermes_state_terminal import RESULT_PREFIX
 
+    # A failed turn's stored result can contain provider errors even in final_response.
+    # Build its preview from the exact terminal receipt and fixed user-facing copy.
+    failed = conn.execute(
+        """SELECT substr(s.title, 1, ?) AS title, ? AS answer
+           FROM session_admissions a JOIN sessions s ON s.id=a.target_session_id
+           WHERE a.admission_id=? AND s.id=? AND a.status='terminal' AND a.outcome='failed'""",
+        (PREVIEW_TITLE_SOURCE_LIMIT + 1, _FAILURE_PREVIEW, row["id"], row["session_id"]),
+    ).fetchone()
+    if failed is not None:
+        return failed
+
     # Read only the exact settlement's final response. Never fall back to recent messages.
     return conn.execute(
         """SELECT substr(s.title, 1, ?) AS title,
                   substr(json_extract(r.value, '$.result.final_response'), 1, ?) AS answer
            FROM sessions s JOIN state_meta r ON r.key=?
-           WHERE s.id=? AND CASE WHEN json_valid(r.value) THEN json_type(r.value, '$.result.final_response') END='text'""",
+           JOIN session_admissions a ON a.admission_id=? AND a.target_session_id=s.id
+           WHERE s.id=? AND a.status='terminal' AND a.outcome='completed'
+             AND CASE WHEN json_valid(r.value) THEN json_type(r.value, '$.result.final_response') END='text'""",
         (PREVIEW_TITLE_SOURCE_LIMIT + 1, PREVIEW_ANSWER_SOURCE_LIMIT + 1,
-         RESULT_PREFIX + row["id"], row["session_id"])).fetchone()
+         RESULT_PREFIX + row["id"], row["id"], row["session_id"])).fetchone()

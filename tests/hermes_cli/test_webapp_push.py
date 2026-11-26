@@ -3,11 +3,13 @@ from types import SimpleNamespace
 from urllib.parse import parse_qs, urlsplit
 
 from gateway.session_authorities import LocalBot
+from gateway.session_authority import SessionAuthority
 from gateway.web_push import store
 from gateway.web_push.delivery import WebPush, installation_digest
 from hermes_cli.browser_credential import generation
 from hermes_cli.dashboard_auth.ws_tickets import consume_ticket
 from hermes_state import SessionDB
+from hermes_state_runtime import begin_runtime_epoch
 from tests.gateway.test_web_push import credentials, endpoint
 from tests.hermes_cli.test_webapp_gated_sign_out import WEBAPP, _sign_in_with_oauth, _sign_in_with_password, gated
 
@@ -25,10 +27,14 @@ def test_profile_scoped_cookie_routes_and_ticket(gated, monkeypatch, tmp_path, c
     browser = gated.browser()
     server = gated.server
     with SessionDB(tmp_path / "default.db") as primary, SessionDB(tmp_path / "other.db") as other:
-        default = SimpleNamespace(db=primary, profile_id="default")
-        secondary = SimpleNamespace(db=other, profile_id="other")
-        push = WebPush(credentials)
-        runner = SimpleNamespace(session_authority=default, web_push=push)
+        runner = SimpleNamespace(web_push=WebPush(credentials), _draining=False)
+        authority_args = {"instance_id": "fixture"}
+        default = SessionAuthority(runner, profile_id="default", db=primary, **authority_args,
+                                   epoch=begin_runtime_epoch(primary, **authority_args))
+        secondary = SessionAuthority(runner, profile_id="other", db=other, **authority_args,
+                                     epoch=begin_runtime_epoch(other, **authority_args))
+        runner.session_authority = default
+        push = runner.web_push
         monkeypatch.setattr(server.app.state, "gateway_runner", runner, raising=False)
         monkeypatch.setattr(server.app.state, "session_authority", default, raising=False)
         from hermes_cli.web_routers import web_push

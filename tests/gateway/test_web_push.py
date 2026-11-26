@@ -66,15 +66,16 @@ def test_bind_only_on_new_admission_and_settle_after_commit(db):
     assert _due(db) is None
 
 
-def test_forged_grants_and_failed_turns_do_not_deliver(db):
+def test_forged_grants_do_not_deliver_and_bound_failed_turns_do(db):
     _register(db)
     _admit(db, "phone", "other", request="other-owner")
     _admit(db, "unregistered", request="forged")
     _admit(db, "phone", request="failed")
     assert "web_push" not in _complete(db)
     assert "web_push" not in _complete(db)
-    assert _complete(db, outcome="failed")["web_push"] is True
-    assert _due(db) is None
+    failed = _complete(db, outcome="failed")
+    assert failed["web_push"] is True
+    assert _due(db)["id"] == failed["admission_id"]
 
 
 def test_revoke_pending_and_retire_only_exact_version(db):

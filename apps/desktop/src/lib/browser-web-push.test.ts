@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { browserPushStatus, consumeBrowserPushLink, readProfileDefault, refreshExistingBrowserPushWorker, writeProfileDefault } from './browser-web-push'
+import { browserPushStatus, consumeBrowserPushLink, enableBrowserPush, readProfileDefault, refreshExistingBrowserPushWorker, writeProfileDefault } from './browser-web-push'
 
 describe('Web Push conversation URL', () => {
   it('turns the query restored by login into the existing profile-scoped chat route', () => {
@@ -63,6 +63,22 @@ describe('existing Web Push worker updates', () => {
     expect(registration.unregister).not.toHaveBeenCalled()
     expect(registration.pushManager.subscribe).not.toHaveBeenCalled()
     expect(subscription.unsubscribe).not.toHaveBeenCalled()
+  })
+
+  it('distinguishes an unconfirmed subscription write from a definite profile refusal', async () => {
+    const { registration, serviceWorker } = enrolledRegistration()
+
+    serviceWorker.register.mockResolvedValue(registration)
+    vi.stubGlobal('localStorage', { getItem: () => 'ab'.repeat(32) })
+    vi.stubGlobal('fetch', vi.fn()
+      .mockResolvedValueOnce(Response.json({ detail: 'web_push_enrollment_unconfirmed' }, { status: 503 }))
+      .mockRejectedValueOnce(new DOMException('', 'AbortError'))
+      .mockResolvedValueOnce(Response.json({ detail: 'Selected Webapp profile is unavailable' }, { status: 503 })))
+
+    await expect(enableBrowserPush('beta', 'AQID')).resolves.toBe('unconfirmed')
+    await expect(enableBrowserPush('beta', 'AQID')).resolves.toBe('unconfirmed')
+    await expect(enableBrowserPush('beta', 'AQID')).rejects.toThrow('Selected Webapp profile is unavailable')
+    expect(registration.pushManager.subscribe).not.toHaveBeenCalled()
   })
 
   it('coalesces overlapping updates and allows a retry after failure', async () => {

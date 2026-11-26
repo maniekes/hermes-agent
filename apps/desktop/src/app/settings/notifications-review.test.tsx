@@ -467,3 +467,37 @@ it('ignores a rejected setup confirmation after switching the active profile', a
   expect(notify).not.toHaveBeenCalled()
   expect(enableBrowserPush).toHaveBeenCalledOnce()
 })
+
+it('offers a read-only status retry after an unconfirmed enrollment response', async () => {
+  const subscription = await getSubscription()
+  getSubscription.mockResolvedValue(null)
+  let status = inactive
+
+  api.mockImplementation(async (_boot, req) => {
+    if (req.path.endsWith('profile-default')) { return undefined as never }
+
+    if (req.path === statusPath) { return status as never }
+
+    if (req.path === statusPath + '/check') { return { active: true } as never }
+    throw new Error('unexpected fixture API call')
+  })
+  vi.mocked(enableBrowserPush).mockResolvedValueOnce('unconfirmed')
+
+  view()
+  const setup = await screen.findByRole('button', { name: 'Set up on this device' })
+
+  await act(async () => { fireEvent.click(setup) })
+  const retry = screen.getByRole('button', { name: 'Retry status' })
+
+  expect(screen.queryByRole('button', { name: 'Set up on this device' })).toBeNull()
+  expect(notify).toHaveBeenCalledWith(expect.objectContaining({ message: expect.stringMatching(/could not confirm/i) }))
+  status = active
+  getSubscription.mockResolvedValue(subscription)
+  retry.focus()
+  await act(async () => { fireEvent.click(retry) })
+
+  expect(screen.getByRole('status').ownerDocument.activeElement).toBe(screen.getByRole('status'))
+  expect(enableBrowserPush).toHaveBeenCalledTimes(1)
+  expect(update).not.toHaveBeenCalled()
+  expect(register).not.toHaveBeenCalled()
+})

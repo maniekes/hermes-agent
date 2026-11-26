@@ -189,8 +189,20 @@ export async function enableBrowserPush(profile: null | string, publicKey: strin
 
   subscription ??= await registration.pushManager.subscribe({ applicationServerKey: key, userVisibleOnly: true })
 
-  if (!(await request<{ active: boolean }>(profile, 'subscribe', subscription.toJSON()))?.active) {
-    throw new Error('Web Push registration failed')
+  try {
+    if (!(await request<{ active: boolean }>(profile, 'subscribe', subscription.toJSON()))?.active) {
+      throw new Error('Web Push registration failed')
+    }
+  } catch (error) {
+    const serverUnconfirmed = error instanceof Error &&
+      /^503:\s*\{\s*"detail"\s*:\s*"web_push_enrollment_unconfirmed"\s*\}$/.test(error.message)
+
+    // Losing the reply to a POST also leaves its outcome unknown.
+    if (serverUnconfirmed || error instanceof TypeError || (error instanceof DOMException && error.name === 'AbortError')) {
+      return 'unconfirmed' as const
+    }
+
+    throw error
   }
 }
 

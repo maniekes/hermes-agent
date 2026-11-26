@@ -306,9 +306,16 @@ function ScopedNotificationsSettings({ browser, localBrowser, profile, subpage }
         throw new Error('Web Push unavailable')
       }
 
-      await enableBrowserPush(profile, status.publicKey)
+      const enrollment = await enableBrowserPush(profile, status.publicKey)
 
       if (reads !== pushReads.current) { return }
+
+      if (enrollment === 'unconfirmed') {
+        setPushState(previous => ({ ...previous, setupUnconfirmed: true }))
+        notify({ kind: 'error', message: pushCopy.setupUnconfirmed })
+
+        return
+      }
 
       const enrolled = await refreshPushStatus('setup')
 

@@ -14,6 +14,7 @@ import re
 import secrets
 import socket
 import ssl
+import sqlite3
 import stat
 import time
 from threading import Condition
@@ -21,6 +22,7 @@ from types import SimpleNamespace
 
 from gateway.session_authorities import served_profile_name
 from gateway.web_push import store
+from hermes_state_errors import StateDbReplacedError
 from hermes_cli import browser_credential
 
 logger = logging.getLogger(__name__)
@@ -28,6 +30,14 @@ logger = logging.getLogger(__name__)
 
 class PreviewSendUnconfirmed(Exception):
     """The generic preference committed while a reserved preview was in flight."""
+
+
+class EnrollmentUnconfirmed(Exception):
+    """A write started, but enrollment could not be confirmed."""
+
+
+class _EnrollmentRefused(Exception):
+    """A definite subscription refusal must roll back the tentative control grant."""
 
 
 _ENDPOINT = re.compile(
@@ -174,28 +184,60 @@ class WebPush:
             logger.warning("Webapp push unavailable: check the web-push extra and private credentials")
             return None
 
-    def register(self, authority, device, owner, login, value):
+    def register(self, authority, device, owner, login, value, *, authority_owner=None):
         subscription = normalize_subscription(value)
         control = self.control_db or authority.db
 
-        def enroll(conn):
-            if browser_credential.is_current(login):
-                return store.enroll_device(conn, device, owner, login, served_profile_name(authority.profile_id))
-            return None
-
-        grants = control._execute_write(enroll)
-        if grants is None:
-            return None
-        grant, profile_grant = grants
         encoded = self._encoded(subscription)
         fingerprint = hmac.digest(self.storage_secret, subscription["endpoint"].encode(), "sha256").hex()
         material = hmac.digest(self.storage_secret, encoded, "sha256").hex()
         nonce = secrets.token_bytes(12)
         sealed = nonce + self.cipher.encrypt(nonce, encoded, self._aad(authority, device))
-        version = authority.db._execute_write(lambda conn: store.subscribe(
-            conn, device, owner, login, self.vapid_id, fingerprint, sealed, time.time(),
-            material=material, grant=grant, profile_grant=profile_grant))
-        return grant if version is not None else None
+        split = control is not authority.db
+        write_started = False
+
+        def subscribe(conn, grant, profile_grant):
+            if authority_owner is not None:
+                from gateway.session_authorities import require_serving
+                from hermes_state_runtime import _epoch
+
+                require_serving(authority)
+                authority._require_admission_open()
+                _epoch(conn, authority.epoch)
+            if not browser_credential.is_current(login):
+                return None
+            return store.subscribe(
+                conn, device, owner, login, self.vapid_id, fingerprint, sealed, time.time(),
+                material=material, grant=grant, profile_grant=profile_grant, authority_owner=authority_owner)
+
+        def enroll(conn):
+            nonlocal write_started
+            if split and write_started:
+                # The profile might already have committed. Never replay it from a control retry.
+                raise EnrollmentUnconfirmed
+            if not browser_credential.is_current(login):
+                return None
+            grants = store.enroll_device(conn, device, owner, login, served_profile_name(authority.profile_id))
+            if grants is None:
+                return None
+            write_started = True
+            if split:
+                # Serialize with revoke/renew, in control -> profile order. No provider call here.
+                version = authority.db._execute_write(lambda profile_conn: subscribe(profile_conn, *grants))
+            else:
+                version = subscribe(conn, *grants)
+            if version is None:
+                raise _EnrollmentRefused
+            return grants[0]
+
+        try:
+            return control._execute_write(enroll)
+        except _EnrollmentRefused:
+            return None
+        except (sqlite3.Error, OSError, StateDbReplacedError) as exc:
+            if write_started:
+                raise EnrollmentUnconfirmed from exc
+            raise
 
     @staticmethod
     def _encoded(subscription):

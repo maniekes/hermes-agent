@@ -181,6 +181,8 @@ interface Scenario {
   quiet?: boolean
   origin?: 'observer'
   foreground?: boolean
+  unfocused?: boolean
+  terminalOutcome?: string
   interrupted?: boolean
   rewind?: 'regenerate' | 'edit'
   tile?: boolean
@@ -232,6 +234,17 @@ const scenarios: Scenario[] = [
   { name: 'existing chat assigned to Web Push during replay', chat: 'warm', replay: 'pending', push: true, expected: 0 },
   { name: 'completion under Settings overlay', chat: 'cold', foreground: true, covered: true, push: true, expected: 0 },
   { name: 'foreground chat assigned to Web Push', chat: 'cold', foreground: true, push: true, expected: 0 },
+  { name: 'foreground failed chat assigned to Web Push', chat: 'cold', foreground: true, push: true, failed: true, terminalOutcome: 'failed', expected: 0 },
+  { name: 'unfocused failed chat assigned to Web Push', chat: 'cold', foreground: true, unfocused: true, push: true, failed: true, terminalOutcome: 'failed', expected: 0 },
+  { name: 'hidden failed chat assigned to Web Push', chat: 'cold', push: true, failed: true, terminalOutcome: 'failed', expected: 0 },
+  { name: 'failed chat from another device', chat: 'cold', origin: 'observer', foreground: true, push: true, failed: true, terminalOutcome: 'failed', expected: 0 },
+  { name: 'failed chat under Settings overlay', chat: 'cold', foreground: true, covered: true, push: true, failed: true, terminalOutcome: 'failed', expected: 0 },
+  { name: 'foreground unknown result', chat: 'cold', foreground: true, push: true, failed: true, terminalOutcome: 'unknown', expected: 0 },
+  { name: 'foreground error carrying cancellation', chat: 'cold', foreground: true, push: true, failed: true, terminalOutcome: 'cancelled', expected: 0 },
+  { name: 'foreground rejected error', chat: 'cold', foreground: true, push: true, failed: true, terminalOutcome: 'rejected', expected: 0 },
+  { name: 'foreground error with no terminal outcome', chat: 'cold', foreground: true, push: true, failed: true, expected: 0 },
+  { name: 'foreground interrupted push turn', chat: 'cold', foreground: true, push: true, interrupted: true, terminalOutcome: 'cancelled', expected: 0 },
+  { name: 'foreground failed turn without Web Push', chat: 'cold', foreground: true, failed: true, terminalOutcome: 'failed', expected: 0 },
   { name: 'regeneration assigned to Web Push', chat: 'cold', rewind: 'regenerate', push: true, expected: 0 },
   { name: 'edit assigned to Web Push', chat: 'cold', rewind: 'edit', push: true, expected: 0 }
 ]
@@ -259,7 +272,7 @@ it.each(scenarios)('dispatches $expected response-ready alerts for $name', async
   }
 
   vi.spyOn(window.document, 'hidden', 'get').mockReturnValue(!scenario.foreground)
-  vi.spyOn(window.document, 'hasFocus').mockReturnValue(Boolean(scenario.foreground))
+  vi.spyOn(window.document, 'hasFocus').mockReturnValue(Boolean(scenario.foreground && !scenario.unfocused))
   vi.mocked(getLatestSessionMessages).mockImplementation(async id => ({ session_id: id, messages }))
 
   const queryClient = new QueryClient()
@@ -517,6 +530,7 @@ it.each(scenarios)('dispatches $expected response-ready alerts for $name', async
 
     const payload = {
       status,
+      ...(scenario.terminalOutcome && { outcome: scenario.terminalOutcome }),
       text: 'Example answer',
       web_push: scenario.push,
       response_ready_managed: scenario.policyManaged,
@@ -581,7 +595,10 @@ it.each(scenarios)('dispatches $expected response-ready alerts for $name', async
     )
     expect(notify).toHaveBeenCalledTimes(scenario.expected)
 
-    if (scenario.push && scenario.foreground && !scenario.covered) {
+    const readable = status === 'complete' || scenario.terminalOutcome === 'failed'
+
+    if (scenario.push && scenario.foreground && !scenario.unfocused && !scenario.covered &&
+        scenario.origin !== 'observer' && readable) {
       expect(acknowledgeBrowserPush.mock.calls.map(([id]) => id)).toEqual([admissionId])
     } else {
       expect(acknowledgeBrowserPush).not.toHaveBeenCalled()
