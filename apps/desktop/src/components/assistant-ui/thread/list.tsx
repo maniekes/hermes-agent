@@ -25,9 +25,8 @@ import { messagePaintWeight } from '@/lib/render-weight'
 import { cn } from '@/lib/utils'
 import { normalizeProfileKey } from '@/store/profile'
 import { $connection } from '@/store/session'
-import { currentUserSessionOpen } from '@/store/session-open-intent'
+import { $pushThreadArrival, currentPushThreadArrival } from '@/store/session-open-intent'
 import {
-  $pushThreadArrival,
   COMPOSER_CLEARANCE_SLOT,
   getThreadScrollPosition,
   onScrollToBottomRequest,
@@ -1311,20 +1310,12 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   useLayoutEffect(() => {
     if (
       !pushArrival ||
+      currentPushThreadArrival() !== pushArrival ||
       !paneVisible ||
       pushArrival.sessionKey !== sessionKey ||
       ownerConnectionId !== LOCAL_CONNECTION_ID ||
-      pushArrival.profile !== ownerProfile ||
-      $pushThreadArrival.get() !== pushArrival
+      pushArrival.profile !== ownerProfile
     ) {
-      return
-    }
-
-    // A sidebar open during hydration supersedes the earlier tap, including
-    // when that open selects the very same conversation.
-    if (pushArrival.openRevision !== currentUserSessionOpen()) {
-      $pushThreadArrival.set(null)
-
       return
     }
 
@@ -1332,9 +1323,10 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
       return
     }
 
-    if (isHistorical) {
-      returnToLatest?.()
+    // An around-read may already be in flight even while the live tail is shown.
+    returnToLatest?.()
 
+    if (isHistorical) {
       return
     }
 

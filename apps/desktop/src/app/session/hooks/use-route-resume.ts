@@ -1,7 +1,9 @@
 import { type MutableRefObject, useEffect, useRef } from 'react'
 
 import { isNewChatRoute } from '@/app/routes'
+import { revealTreePane } from '@/components/pane-shell/tree/store'
 import { type SessionResumeRequest, setResumeExhaustedSessionId } from '@/store/session'
+import { currentPushThreadArrival } from '@/store/session-open-intent'
 import type { SessionProfileRoute } from '@/store/session-request-router'
 import { markSelectionRestore } from '@/store/session-states'
 
@@ -132,6 +134,7 @@ export function useRouteResume({
   useEffect(() => {
     const gatewayOpen = gatewayState === 'open'
     const pathnameChanged = lastPathnameRef.current !== locationPathname
+    const pushArrival = currentPushThreadArrival()
     // Fire only on a genuine closed->open transition (a reconnect). seenGatewayStateRef
     // stays false until the first effect run, so a session that mounts with the gateway
     // already open is not mistaken for "became open" and does not double-resume with the
@@ -207,13 +210,14 @@ export function useRouteResume({
           handledResumeRequestRef.current = sessionResumeRequest.sequence
         }
 
-        // The window's FIRST resume re-attaches the pre-reload route rather
-        // than navigating anywhere, so the selection listener must not home
-        // focus/tabs to the workspace over the persisted layout (see
-        // markSelectionRestore). One-shot: consumed by the selection change
-        // resumeSession makes synchronously at entry.
+        // An ordinary boot restores the persisted tab over the URL's primary
+        // chat. A cold notification tap explicitly opens that primary chat.
         if (bootResumeRef.current) {
-          markSelectionRestore()
+          if (pushArrival?.coldStart && pushArrival.sessionKey === routedSessionId) {
+            revealTreePane('workspace')
+          } else {
+            markSelectionRestore()
+          }
         }
 
         bootResumeRef.current = false

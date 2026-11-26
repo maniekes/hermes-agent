@@ -41,10 +41,10 @@ import {
   setRememberedSessionId,
   setSessionOwnerHint
 } from '@/store/session'
+import { requestPushThreadEnd } from '@/store/session-open-intent'
 import { $botChatScopes, $sessionTiles, knownOwnerForSession, storedSessionIdForRuntimeId } from '@/store/session-states'
 import { onSessionsChanged } from '@/store/session-sync'
 import { requestSkillInstallFromDeepLink } from '@/store/skill-deeplink-install'
-import { requestPushThreadEnd } from '@/store/thread-scroll'
 import { openUpdatesWindow, startUpdatePoller, stopUpdatePoller } from '@/store/updates'
 import { isBrowserWindow, isHudWindow, isPeerInstanceWindow, isSecondaryWindow } from '@/store/windows'
 import type { SessionInfo } from '@/types/hermes'

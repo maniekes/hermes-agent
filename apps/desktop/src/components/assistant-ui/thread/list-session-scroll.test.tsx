@@ -8,11 +8,14 @@ import { PaneLifecycleContext, PaneVisibleContext } from '@/components/pane-shel
 import { rescopeConnectionScopedStores } from '@/lib/connection-scoped'
 import { keybindAction } from '@/lib/keybinds/actions'
 import { setActiveProfile } from '@/store/profile'
-import { _resetUserSessionOpenForTests, noteUserSessionOpen } from '@/store/session-open-intent'
 import {
   $pushThreadArrival,
+  _resetUserSessionOpenForTests,
+  noteUserSessionOpen,
+  requestPushThreadEnd
+} from '@/store/session-open-intent'
+import {
   getThreadScrollPosition,
-  requestPushThreadEnd,
   requestScrollToBottom,
   requestThreadPageScroll,
   saveThreadScrollPosition,

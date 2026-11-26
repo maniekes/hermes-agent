@@ -3,6 +3,7 @@ import type { MutableRefObject } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { $resumeExhaustedSessionId, setResumeExhaustedSessionId } from '@/store/session'
+import { $pushThreadArrival, requestPushThreadEnd } from '@/store/session-open-intent'
 import type { SessionProfileRoute } from '@/store/session-request-router'
 import { markSelectionRestore } from '@/store/session-states'
 
@@ -435,6 +436,42 @@ describe('useRouteResume', () => {
 
     expect(resumeSession).toHaveBeenCalledWith('session-2', true)
     expect(markSelectionRestore).toHaveBeenCalledTimes(1)
+  })
+
+  it('discards a pending push on a non-session route even with the gateway closed', () => {
+    const originalUrl = window.location.href
+
+    const props = {
+      activeSessionId: null,
+      activeSessionIdRef: { current: null },
+      creatingSessionRef: { current: false },
+      currentView: 'chat',
+      freshDraftReady: false,
+      gatewayState: 'closed',
+      locationPathname: '/alpha',
+      resumeSession: vi.fn(async () => undefined),
+      routedSessionId: 'alpha',
+      runtimeIdByStoredSessionIdRef: { current: new Map() },
+      selectedStoredSessionId: null,
+      selectedStoredSessionIdRef: { current: null },
+      startFreshSessionDraft: vi.fn()
+    }
+
+    try {
+      window.history.replaceState(null, '', '#/alpha')
+      requestPushThreadEnd('alpha', 'default', true)
+      const { rerender } = render(<RouteResumeHarness {...props} />)
+      expect($pushThreadArrival.get()?.sessionKey).toBe('alpha')
+
+      window.history.replaceState(null, '', '#/settings')
+      rerender(<RouteResumeHarness {...props} currentView="settings" locationPathname="/settings" routedSessionId={null} />)
+      window.history.replaceState(null, '', '#/alpha')
+      rerender(<RouteResumeHarness {...props} />)
+      expect($pushThreadArrival.get()).toBeNull()
+    } finally {
+      $pushThreadArrival.set(null)
+      window.history.replaceState(null, '', originalUrl)
+    }
   })
 
   it('resumes the selected route again when the gateway reconnects', () => {

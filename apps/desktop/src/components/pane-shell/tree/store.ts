@@ -16,6 +16,7 @@ import { writeKey } from '@/lib/storage'
 import { type InterfaceMode, modeLayout } from '@/store/interface-mode'
 import { notify } from '@/store/notifications'
 import { clearAllPaneSizeOverrides } from '@/store/panes'
+import { $pushThreadArrival } from '@/store/session-open-intent'
 import { isBrowserWindow, isSecondaryWindow } from '@/store/windows'
 
 import {
@@ -884,7 +885,7 @@ export function activateTreeTabSlot(slot: number): null | string {
     return null
   }
 
-  activateTreePane(group.id, panes[slot - 1])
+  activateTreePane(group.id, panes[slot - 1], 'tab-selection')
 
   return panes[slot - 1]
 }
@@ -913,7 +914,7 @@ export function cycleTreeTabInFocusedZone(direction: 1 | -1): null | string {
   const current = Math.max(0, panes.indexOf(group.active ?? ''))
   const idx = panes.includes(group.active ?? '') ? current : 0
   const nextId = panes[(idx + direction + panes.length) % panes.length]
-  activateTreePane(group.id, nextId)
+  activateTreePane(group.id, nextId, 'tab-selection')
 
   // No strip repair here: cycling needs two shown tabs, which is exactly when
   // auto shows a strip anyway. The old force-show existed because a stray
@@ -1855,10 +1856,14 @@ export function mergeTreeZones(groupIds: string[], paneId: string | readonly str
   }
 }
 
-export function activateTreePane(groupId: string, paneId: string) {
+export function activateTreePane(groupId: string, paneId: string, source?: 'tab-selection') {
   const tree = $layoutTree.get()
 
   if (tree) {
+    if (source === 'tab-selection') {
+      $pushThreadArrival.set(null)
+    }
+
     commit(setActivePaneOp(tree, groupId, paneId))
   }
 }
