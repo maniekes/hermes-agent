@@ -65,7 +65,9 @@ def pending_rows(authority, ref):
     """The pending rows a viewer is shown, plus each queued admission in transfer to the running
     claim: listed ``started`` and ``steering``, because it may still go back to its queue place, and a
     client must not retire an admission it no longer sees. The caller holds the stream lock."""
-    rows = {row['admission_id']: row for row in authority._pending_rows(ref)}
+    from gateway.session_cron_reports import report_payload
+    # Completion notes wait in the same FIFO, but only their committed note belongs to the viewer.
+    rows = {row['admission_id']: row for row in authority._pending_rows(ref) if report_payload(row) is None}
     entry = authority.steer_transfers.get(ref.session_id)
     for admission_id in entry[1] if entry is not None else ():
         row = get_session_admission(authority.db, admission_id=admission_id)

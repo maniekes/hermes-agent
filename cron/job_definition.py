@@ -29,7 +29,7 @@ def merge_job_definition(local: dict[str, Any], authored: dict[str, Any]) -> dic
     merged.update((key, authored[key]) for key in JOB_DEFINITION_FIELDS if key in authored)
     from cron.conversation_reports import set_target_session, validate_target_session
     target = validate_target_session(authored.get("target_session_id"))
-    set_target_session(merged, target, previous=local)
+    set_target_session(merged, target)
     merged["repeat"] = {
         "completed": (local.get("repeat") or {}).get("completed", 0),
         "times": (authored.get("repeat") or {}).get("times"),

@@ -2091,7 +2091,7 @@ def _fill_missing_next_run(updated: dict[str, Any]) -> None:
 def update_job(job_id: str, updates: dict[str, Any]) -> Optional[dict[str, Any]]:
     """Update a job by ID, refreshing derived schedule fields when needed."""
     # ``id`` is a path component under OUTPUT_DIR — changing it would leak path-escape values.
-    bad_fields = (_IMMUTABLE_JOB_FIELDS | {"target_session_revision"}).intersection(updates or {})
+    bad_fields = _IMMUTABLE_JOB_FIELDS.intersection(updates or {})
     if bad_fields:
         raise ValueError(f"Cron job field(s) cannot be updated: {', '.join(sorted(bad_fields))}")
 
@@ -2102,7 +2102,7 @@ def update_job(job_id: str, updates: dict[str, Any]) -> Optional[dict[str, Any]]
         updated = _apply_skill_fields({**job, **updates})
         if "target_session_id" in updates:
             from cron.conversation_reports import set_target_session, validate_target_session
-            set_target_session(updated, validate_target_session(updates["target_session_id"]), previous=job)
+            set_target_session(updated, validate_target_session(updates["target_session_id"]))
         _reject_terminal_activation(job, updated, job_id)
         # Re-check on the MERGED record; scoped to changed fields so legacy records keep loading.
         if {"monitor_script", "monitor_url", "no_agent", "script"}.intersection(updates):

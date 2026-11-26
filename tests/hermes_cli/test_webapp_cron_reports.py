@@ -76,7 +76,7 @@ async def publish(world, status, run_id, *, drain=True, reconcile=True):
     assert authority._schedule_admitted == scheduled
 
 
-@pytest.mark.parametrize("change", ["edit", "clear", "remove"])
+@pytest.mark.parametrize("change", ["edit", "clear", "pause", "remove"])
 def test_prepared_reports_keep_original_target_across_retry_and_config_change(
         report_world, endpoint, monkeypatch, change):
     world = report_world
@@ -102,6 +102,8 @@ def test_prepared_reports_keep_original_target_across_retry_and_config_change(
             jobs.update_job(job["id"], {"target_session_id": second})
         elif change == "clear":
             jobs.update_job(job["id"], {"target_session_id": ""})
+        elif change == "pause":
+            assert not jobs.pause_job(job["id"])["enabled"]
         else:
             assert jobs.remove_job(job["id"])
         with monkeypatch.context() as patch:
@@ -197,6 +199,8 @@ def test_report_waits_for_active_fifo_then_preserves_compression_and_revocation(
         job = jobs.create_job("Synthetic compression report", "every 1h", target_session_id=root)
         prepare(job, "compression-run", "Synthetic completion to compressed target")
         asyncio.run(publish(world, "pending", "compression-run"))
+        attached = _socket_request(browser, PHONE, "session.resume", {"session_id": root})
+        assert [row["text"] for row in attached["pending"]] == ["Ordinary first"]
         with authority.db._read_ctx() as conn:
             assert not conn.execute("SELECT 1 FROM web_push_outbox").fetchone()
             assert not conn.execute("SELECT 1 FROM messages WHERE display_kind='internal_notification'").fetchone()

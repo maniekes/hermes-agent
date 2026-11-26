@@ -135,7 +135,6 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
              execution_id TEXT PRIMARY KEY,
              job_id TEXT NOT NULL,
              target_session_id TEXT NOT NULL,
-             target_revision TEXT,
              content TEXT NOT NULL,
              created_at TEXT NOT NULL,
              status TEXT NOT NULL CHECK(status IN ('pending', 'materialized', 'undelivered'))
