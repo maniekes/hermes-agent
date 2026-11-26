@@ -17,7 +17,7 @@
 import { useStore } from '@nanostores/react'
 import { useQueryClient } from '@tanstack/react-query'
 import { atom, computed } from 'nanostores'
-import { useCallback, useEffect, useMemo, useRef, useSyncExternalStore } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 
 import { useGatewayRequest } from '@/app/gateway/hooks/use-gateway-request'
 import { useModelControls } from '@/app/session/hooks/use-model-controls'
@@ -464,6 +464,7 @@ export function SessionTilePane({ storedSessionId }: { storedSessionId: string }
   const gatewayOpen = useStore($gatewayState) === 'open'
   const delegateRevision = useStore($sessionTileDelegateRevision)
   const resumingRef = useRef(false)
+  const [resumeAttempt, setResumeAttempt] = useState(0)
   const view = useMemo(() => buildTileView(storedSessionId), [storedSessionId])
 
   const storedSessionStillExists = useCallback(
@@ -541,10 +542,27 @@ export function SessionTilePane({ storedSessionId }: { storedSessionId: string }
 
     resumingRef.current = true
 
+    let reopened = false
+    let retryAfterReconnect = false
+
+    const stopWatchingGateway = $gatewayState.listen(state => {
+      if (state === 'open') {
+        reopened = true
+      }
+    })
+
     delegate
       .resumeTile(storedSessionId)
       .then(id => patchSessionTile(storedSessionId, { error: undefined, runtimeId: id }))
       .catch(async (err: unknown) => {
+        // The normal open effect could not start over while this attempt held
+        // resumingRef. Resume on the new socket once the old attempt releases it.
+        if (reopened) {
+          retryAfterReconnect = true
+
+          return
+        }
+
         const message = err instanceof Error ? err.message : String(err)
 
         if (!/session not found|\b404\b/i.test(message)) {
@@ -574,9 +592,14 @@ export function SessionTilePane({ storedSessionId }: { storedSessionId: string }
         }
       })
       .finally(() => {
+        stopWatchingGateway()
         resumingRef.current = false
+
+        if (retryAfterReconnect) {
+          setResumeAttempt(attempt => attempt + 1)
+        }
       })
-  }, [delegateRevision, gatewayOpen, ownerRoute, runtimeId, storedSessionId, tile?.error])
+  }, [delegateRevision, gatewayOpen, ownerRoute, resumeAttempt, runtimeId, storedSessionId, tile?.error])
 
   // The gateway (re)opening invalidates any latched error — it likely came
   // from a not-yet-open gateway or the previous connection. Clearing it

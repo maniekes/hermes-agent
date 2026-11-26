@@ -242,6 +242,35 @@ describe('useSessionTileDelegate resumeTile', () => {
     expect(states.current.get(id)?.messages.map(message => message.rowId)).toEqual([1, 2, 3])
   })
 
+  it.each([
+    { pageId: 'logical-root', profile: 'default', expected: [4] },
+    { pageId: 'physical-tip', profile: 'default', expected: [4] },
+    { pageId: 'other-id', profile: 'default', expected: [] },
+    { pageId: 'physical-tip', profile: 'other-profile', expected: [] }
+  ])('uses only the owner-scoped root or tip page ($pageId, $profile)', async ({ expected, pageId, profile }) => {
+    const id = 'physical-tip'
+    const root = 'logical-root'
+
+    const update = vi.fn((_runtimeId: string, apply: (state: ClientSessionState) => ClientSessionState) =>
+      apply(createClientSessionState(id))
+    )
+
+    setSessions([row({ id, _lineage_root_id: root })])
+    vi.mocked(requestGatewayForProfile).mockResolvedValueOnce({
+      session_id: root, info: { stored_session_id: root }, messages_omitted: true, messages: []
+    } as never)
+    vi.mocked(getLatestSessionMessages).mockResolvedValueOnce({
+      session_id: pageId, profile,
+      messages: [{ role: 'assistant', content: 'last answer', timestamp: 1, row_id: 4 }]
+    })
+    renderTile(vi.fn(), { updateSessionState: update })
+
+    await expect(sessionTileDelegate()!.resumeTile(id)).resolves.toBe(root)
+    const state: ClientSessionState = update.mock.results[0].value
+
+    expect(state.messages.map(message => message.rowId)).toEqual(expected)
+  })
+
   it.each(['reconnect', 'profile switch', 'lineage changed', 'close'])('discards a pending cold page on %s', async mode => {
     const id = 'stored-obsolete'
     const tile = { storedSessionId: id, ownerProfile: 'default' }

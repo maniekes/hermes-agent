@@ -539,7 +539,15 @@ export function useSessionTileDelegate({
         const baseline = liveAtRead?.messages.length ? liveAtRead.messages : resumeRequestBaselineMessages
         const page = authoritativeSnapshot ? null : await readTranscript()
         const attachedStoredId = resumed.info?.stored_session_id || resumed.session_key || resumed.resumed || storedSessionId
-        const pageMessages = page?.session_id === attachedStoredId ? page.messages : []
+        const expectedProfile = typeof restScope === 'object' ? restScope?.profile : restScope
+
+        // Canonical resume can return the logical root for the very same
+        // owner-scoped request whose REST page names the requested physical tip.
+        const pageMatchesBinding = page &&
+          (page.session_id === storedSessionId || page.session_id === attachedStoredId) &&
+          (!page.profile || page.profile === expectedProfile)
+
+        const pageMessages = pageMatchesBinding ? page.messages : []
 
         const tail = pageMessages.length
           ? await extendRefreshPageToOverlap(
