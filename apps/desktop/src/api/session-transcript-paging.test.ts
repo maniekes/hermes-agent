@@ -314,7 +314,7 @@ describe('session transcript pagination ownership', () => {
     expect(transcriptTailState('stored-session', ownerA)).toEqual({
       nextOffset: tail.messages.length + 1,
       possiblyTruncated: false,
-      profile: { connectionId: 'source-a' }
+      profile: { connectionId: 'source-a', profile: null }
     })
     expect(transcriptTailState('stored-session', { connectionId: 'source-a', profile: 'default' })).toBe(defaultA)
     expect(transcriptTailState('stored-session', ownerB)).toBe(defaultB)

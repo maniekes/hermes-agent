@@ -108,7 +108,7 @@ describe('useSessionTileDelegate resumeTile', () => {
     const runtimeId = await sessionTileDelegate()!.resumeTile('stored-x')
 
     expect(runtimeId).toBe('runtime-1')
-    expect(getLatestSessionMessages).toHaveBeenCalledWith('stored-x', 'ai-engineer', { verifyResolvedSession: true })
+    expect(getLatestSessionMessages).toHaveBeenCalledWith('stored-x', 'ai-engineer', expect.objectContaining({ verifyResolvedSession: true, readOwner: expect.anything() }))
     expect(requestGatewayForProfile).toHaveBeenCalledWith(
       'ai-engineer',
       'session.resume',
@@ -190,7 +190,7 @@ describe('useSessionTileDelegate resumeTile', () => {
     expect(getLatestSessionMessages).toHaveBeenCalledWith('stored-remote', {
       connectionId: 'barry',
       profile: 'backend-oxcoder'
-    }, { verifyResolvedSession: true })
+    }, expect.objectContaining({ verifyResolvedSession: true, readOwner: expect.anything() }))
     expect(requestGatewayForAgent).toHaveBeenCalledWith('barry', 'oxcoder', 'session.resume', {
       session_id: 'stored-remote',
       cols: 96,

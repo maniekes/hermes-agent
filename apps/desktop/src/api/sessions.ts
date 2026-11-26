@@ -1,5 +1,8 @@
+import { LOCAL_CONNECTION_ID } from '@hermes/shared'
+
 import { isMissingRestEndpoint, isUnroutedRestPath } from '@/lib/gateway-rpc'
 import { maybeBackfillLegacySessionOwners } from '@/lib/legacy-session-owner-backfill'
+import { isBrowserHostedDesktop } from '@/lib/platform'
 import { stampRowsWithOwningConnection } from '@/lib/session-owner-stamp'
 import { pageHonorsLatestOrder, recordTranscriptTail } from '@/store/transcript-tail'
 import type {
@@ -15,12 +18,13 @@ import { createSessionMutationClient, type SessionMutationIdentity, type Session
 import {
   ambientOwnerConnectionId,
   capabilityScoped,
-  connectionScoped,
   getApiRequestConnection,
   getApiRequestProfile,
   hermesApi,
+  hermesApiAs,
   type ProfileScope,
   profileScoped,
+  type ResolvedOwner,
   sessionReadOwnerPin
 } from './client'
 
@@ -477,23 +481,42 @@ export function getSession(id: string, profile?: ProfileScope): Promise<SessionI
   })
 }
 
-// Reads another profile's transcript. For a remote profile Electron reroutes
-// this GET to the remote backend (which serves its own state.db); for a local
-// profile the primary opens that profile's state.db via ?profile=. Omit for
-// the current/default profile.
-export function getSessionMessages(
+/** Snapshot the transcript route before attach or a multi-page read. Null
+ * on native means the named legacy profile route, not the renderer's next
+ * registry selection. Browser reads must explicitly name the local origin. */
+interface SessionReadOwner extends ResolvedOwner {
+  tailConnectionId?: string
+  tailProfile: string
+}
+
+export function captureSessionReadOwner(id: string, profile?: ProfileScope): SessionReadOwner {
+  const scope = { ...sessionScoped(profile), ...sessionReadOwnerPin(id, profile) }
+
+  const connectionId = typeof profile === 'object' && profile?.connectionId === null
+    ? null
+    : scope.connectionId ?? getApiRequestConnection() ?? (isBrowserHostedDesktop() ? LOCAL_CONNECTION_ID : null)
+
+  return {
+    connectionId,
+    // An unnamed profile selects the captured backend's serving profile.
+    profile: scope.profile ?? null,
+    tailConnectionId: connectionId ?? (ambientOwnerConnectionId() === LOCAL_CONNECTION_ID ? LOCAL_CONNECTION_ID : undefined),
+    tailProfile: getApiRequestProfile() || 'default'
+  }
+}
+
+type SessionMessagePage = { limit?: number; offset?: number; order?: 'latest' | 'oldest'; includeCompacted?: boolean }
+
+function readSessionMessages(
   id: string,
-  profile?: ProfileScope,
-  page: { limit?: number; offset?: number; order?: 'latest' | 'oldest'; includeCompacted?: boolean } = {},
-  options: { passive?: boolean } = {}
+  owner: ResolvedOwner,
+  page: SessionMessagePage,
+  options: { passive?: boolean }
 ): Promise<SessionMessagesResponse> {
   const query = new URLSearchParams()
 
-  // Owner connection pin (#125372) — see getSession.
-  const sessionScope = { ...sessionScoped(profile), ...sessionReadOwnerPin(id, profile) }
-
-  if (sessionScope.profile) {
-    query.set('profile', sessionScope.profile)
+  if (owner.profile) {
+    query.set('profile', owner.profile)
   }
 
   if (page.limit !== undefined) {
@@ -514,11 +537,21 @@ export function getSessionMessages(
 
   const suffix = query.size ? `?${query.toString()}` : ''
 
-  return hermesApi<SessionMessagesResponse>({
-    ...sessionScope,
+  // Keep the existing background priority for transcript reads.
+  return hermesApiAs<SessionMessagesResponse>({ connectionId: owner.connectionId, profile: null }, {
+    ...(owner.profile ? { profile: owner.profile } : {}),
     path: `/api/sessions/${encodeURIComponent(id)}/messages${suffix}`,
     ...(options.passive ? { passive: true } : {})
   })
+}
+
+export function getSessionMessages(
+  id: string,
+  profile?: ProfileScope,
+  page: SessionMessagePage = {},
+  options: { passive?: boolean } = {}
+): Promise<SessionMessagesResponse> {
+  return readSessionMessages(id, captureSessionReadOwner(id, profile), page, options)
 }
 
 /**
@@ -533,30 +566,22 @@ export const LATEST_SESSION_MESSAGES_LIMIT = 120
 export function getLatestSessionMessages(
   id: string,
   profile?: ProfileScope,
-  options: { passive?: boolean; verifyResolvedSession?: boolean } = {}
+  options: { passive?: boolean; verifyResolvedSession?: boolean; readOwner?: SessionReadOwner } = {}
 ): Promise<SessionMessagesResponse> {
-  // Key pagination by the effective request owner, not the caller's spelling
-  // (ambient, profile string, or explicit pin). Otherwise refreshes create
-  // duplicate tail entries and "Show earlier" cannot resolve the loaded tail.
-  // Capture before awaiting: the active gateway may change during the read.
-  const route = { ...connectionScoped(), ...sessionScoped(profile), ...sessionReadOwnerPin(id, profile) }
-  // Only the lookup key is normalized — backfill replays `route` verbatim.
-  const ambientConnectionId = route.connectionId || ambientOwnerConnectionId()
-  const ambientProfile = getApiRequestProfile() || 'default'
-  const expectedProfile = route.profile || ambientProfile
+  const owner = options.readOwner ?? captureSessionReadOwner(id, profile)
+  const expectedProfile = owner.profile || owner.tailProfile
 
-  const scopedRoute = options.verifyResolvedSession
-    ? { ...route, connectionId: route.connectionId, profile: expectedProfile }
-    : route
-
-  const readScope = options.verifyResolvedSession ? scopedRoute : profile
+  const route = {
+    connectionId: owner.connectionId,
+    profile: options.verifyResolvedSession ? expectedProfile : owner.profile
+  }
 
   // includeCompacted: durable display history must include rows preserved by
   // in-place compaction (active=0, compacted=1); without them the transcript
   // silently ends at the compaction boundary and earlier turns are unreachable.
-  return getSessionMessages(
+  return readSessionMessages(
     id,
-    readScope,
+    route,
     {
       limit: LATEST_SESSION_MESSAGES_LIMIT,
       order: 'latest',
@@ -564,7 +589,7 @@ export function getLatestSessionMessages(
     },
     options
   ).then(async page => {
-    if (options.verifyResolvedSession && page.profile && page.profile !== expectedProfile) {
+    if (options.verifyResolvedSession && page.profile && page.profile !== route.profile) {
       throw new Error('Transcript page belongs to a different profile')
     }
 
@@ -578,7 +603,11 @@ export function getLatestSessionMessages(
     // is the one paging contract both backend generations honour.
     const authoritativePage = pageHonorsLatestOrder(page)
       ? page
-      : await completeTranscriptForOrderlessBackend(id, readScope, page, options)
+      : await completeTranscriptForOrderlessBackend(id, route, page, options)
+
+    if (options.verifyResolvedSession && authoritativePage.profile && authoritativePage.profile !== route.profile) {
+      throw new Error('Transcript page belongs to a different profile')
+    }
 
     // Canonical attach can bind the logical root while REST resolves a physical
     // segment. The scoped timeline uses the same storage resolver as /messages
@@ -586,14 +615,15 @@ export function getLatestSessionMessages(
     if (options.verifyResolvedSession && authoritativePage.session_id !== id) {
       const query = new URLSearchParams({ limit: '1', profile: expectedProfile })
 
-      const resolved = await hermesApi<Pick<SessionMessagesResponse, 'profile' | 'session_id'>>({
-        ...scopedRoute,
+      const resolved = await hermesApiAs<Pick<SessionMessagesResponse, 'profile' | 'session_id'>>(
+        { connectionId: route.connectionId, profile: null }, {
+        profile: expectedProfile,
         path: `/api/sessions/${encodeURIComponent(id)}/timeline?${query}`,
         ...(options.passive ? { passive: true } : {})
       })
 
       if (!authoritativePage.session_id || resolved.session_id !== authoritativePage.session_id ||
-          resolved.profile !== expectedProfile) {
+          resolved.profile !== route.profile) {
         throw new Error('Transcript page does not match the resolved session')
       }
     }
@@ -604,16 +634,15 @@ export function getLatestSessionMessages(
     // the resolved id — callers hold either.
     // A backend that predates the `profile` field cannot name itself; its
     // untagged read landed on the ambient profile.
-    const owner = {
-      ...route,
-      connectionId: ambientConnectionId,
-      profile: route.profile || page.profile || ambientProfile
+    const paginationOwner = {
+      connectionId: owner.tailConnectionId,
+      profile: route.profile || authoritativePage.profile || owner.tailProfile
     }
 
-    recordTranscriptTail(id, authoritativePage, scopedRoute, owner)
+    recordTranscriptTail(id, authoritativePage, route, paginationOwner)
 
     if (authoritativePage.session_id && authoritativePage.session_id !== id) {
-      recordTranscriptTail(authoritativePage.session_id, authoritativePage, scopedRoute, owner)
+      recordTranscriptTail(authoritativePage.session_id, authoritativePage, route, paginationOwner)
     }
 
     return authoritativePage
@@ -636,7 +665,7 @@ export function getLatestSessionMessages(
  */
 async function completeTranscriptForOrderlessBackend(
   id: string,
-  profile: ProfileScope | undefined,
+  owner: ResolvedOwner,
   page: SessionMessagesResponse,
   options: { passive?: boolean }
 ): Promise<SessionMessagesResponse> {
@@ -646,7 +675,14 @@ async function completeTranscriptForOrderlessBackend(
     return complete
   }
 
-  return { ...complete, messages: (await getAllSessionMessages(id, profile, options)).messages }
+  const transcript = await readAllSessionMessages(id, owner, options)
+
+  if (transcript.session_id !== page.session_id ||
+      (page.profile && transcript.profile && transcript.profile !== page.profile)) {
+    throw new Error('Transcript page identity changed while reading the full history')
+  }
+
+  return transcript
 }
 
 /**
@@ -708,22 +744,30 @@ export function getOlderSessionMessages(
   return getSessionMessages(id, profile, { includeCompacted: true, limit, offset, order: 'latest' })
 }
 
-export async function getAllSessionMessages(
+export function getAllSessionMessages(
   id: string,
   profile?: ProfileScope,
   options: { maxJsonChars?: number; passive?: boolean } = {}
+): Promise<SessionMessagesResponse> {
+  return readAllSessionMessages(id, captureSessionReadOwner(id, profile), options)
+}
+
+async function readAllSessionMessages(
+  id: string,
+  owner: ResolvedOwner,
+  options: { maxJsonChars?: number; passive?: boolean }
 ): Promise<SessionMessagesResponse> {
   const messages: SessionMessage[] = []
   const pageSize = 500
   const maxJsonChars = options.maxJsonChars ?? 32_000_000
   let jsonChars = 0
   let offset = 0
-  let resolvedSessionId = id
+  let identity: Pick<SessionMessagesResponse, 'session_id' | 'profile'> | undefined
 
   while (true) {
-    const page = await getSessionMessages(
+    const page = await readSessionMessages(
       id,
-      profile,
+      owner,
       {
         limit: pageSize,
         offset,
@@ -733,7 +777,12 @@ export async function getAllSessionMessages(
       { passive: options.passive }
     )
 
-    resolvedSessionId = page.session_id
+    if (!page.session_id || (identity &&
+        (identity.session_id !== page.session_id || identity.profile !== page.profile))) {
+      throw new Error('Transcript page identity changed during pagination')
+    }
+
+    identity ??= { session_id: page.session_id, ...(page.profile ? { profile: page.profile } : {}) }
     jsonChars += (JSON.stringify(page.messages) ?? '').length
 
     if (jsonChars > maxJsonChars) {
@@ -752,7 +801,7 @@ export async function getAllSessionMessages(
     offset += page.messages.length
   }
 
-  return { session_id: resolvedSessionId, messages }
+  return { ...identity!, messages }
 }
 
 export function deleteSession(id: string, profile?: ProfileScope): Promise<{ ok: boolean }> {

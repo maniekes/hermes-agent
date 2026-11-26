@@ -6,6 +6,7 @@ import {
   olderPageReader
 } from '@/app/chat/transcript-backfill'
 import {
+  captureSessionReadOwner,
   fetchStoredTranscriptAcrossBackends,
   getLatestSessionMessages,
   getSession,
@@ -399,6 +400,7 @@ export function useSessionTileDelegate({
         // its reverse lookup. Reconnect invalidates both bindings.
         const existing = boundTileRuntimeId(runtimeIdByStoredSessionIdRef, storedSessionId)
 
+        const tile = $sessionTiles.get().find(candidate => candidate.storedSessionId === storedSessionId)
         const cached = existing ? sessionStateByRuntimeIdRef.current.get(existing) : undefined
         const resumeRequestBaselineMessages = cached?.messages ?? []
         const refreshTranscript = options?.refreshTranscript === true
@@ -415,7 +417,11 @@ export function useSessionTileDelegate({
         // warm snapshot is whatever the tile last painted, and cron bot-chat
         // deliveries that landed while the panel's WS was down never arrive
         // as realtime events (#96183).
-        if (existing && isWarmTileState(cached, storedSessionId) && !refreshTranscript && !authoritativeSnapshot) {
+        if (
+          existing && isWarmTileState(cached, storedSessionId) &&
+          (cached.messages.length > 0 || tile?.runtimeId === existing) &&
+          !refreshTranscript && !authoritativeSnapshot
+        ) {
           publishSessionState(existing, cached)
 
           return existing
@@ -429,10 +435,16 @@ export function useSessionTileDelegate({
         const owner = await ownerForStoredSession(storedSessionId)
 
         const restScope = tileRestScope(owner)
+        const readOwner = captureSessionReadOwner(storedSessionId, restScope)
 
-        const readTranscript = () => getLatestSessionMessages(storedSessionId, restScope).catch(() => null)
+        const attachOwner = typeof owner === 'string' && readOwner.connectionId
+          ? { connectionId: readOwner.connectionId, profile: owner }
+          : owner
 
-        if (!authoritativeSnapshot && existing && isWarmTileState(cached, storedSessionId)) {
+        const readTranscript = () =>
+          getLatestSessionMessages(storedSessionId, restScope, { verifyResolvedSession: true, readOwner })
+
+        if (!authoritativeSnapshot && existing && isWarmTileState(cached, storedSessionId) && cached.messages.length > 0) {
           const prefetch = await readTranscript()
 
           // A long turn can push every rendered row off the newest page; read
@@ -440,7 +452,7 @@ export function useSessionTileDelegate({
           const prefetched = await extendRefreshPageToOverlap(
             toChatMessages(prefetch?.messages ?? []),
             cached.messages,
-            olderPageReader(storedSessionId, restScope, prefetch)
+            olderPageReader(storedSessionId, readOwner, prefetch)
           )
 
           // The overlap reads await; drop the page if the tile was rebound.
@@ -464,7 +476,6 @@ export function useSessionTileDelegate({
 
         const generation = bindingGeneration.current
         const states = sessionStateByRuntimeIdRef.current
-        const tile = $sessionTiles.get().find(candidate => candidate.storedSessionId === storedSessionId)
 
         // #94724 no-owner recovery: dispatching the resume through the same
         // fail-closed gate as the window's RPC dispatcher keeps an unknown
@@ -479,18 +490,18 @@ export function useSessionTileDelegate({
             return singleFlightSessionResume(
               storedSessionId,
               () =>
-                requestForSessionProfile<SessionResumeResult>(owner, requestGateway, 'session.resume', {
+                requestForSessionProfile<SessionResumeResult>(attachOwner, requestGateway, 'session.resume', {
                   session_id: storedSessionId,
                   cols: 96,
                   omit_messages: !authoritativeSnapshot,
                   ...(owner ? { profile: typeof owner === 'string' ? owner : owner.profile } : {})
                 }),
-              { requiresMessages: authoritativeSnapshot, scope: owner }
+              { requiresMessages: authoritativeSnapshot, scope: attachOwner }
             )
           },
           async () => {
             const stored =
-              (await readTranscript()) ??
+              (await getLatestSessionMessages(storedSessionId, restScope, { readOwner }).catch(() => null)) ??
               (await fetchStoredTranscriptAcrossBackends(storedSessionId))
 
             if (!stored) {
@@ -538,15 +549,20 @@ export function useSessionTileDelegate({
         const liveAtRead = states.get(runtimeId)
         const baseline = liveAtRead?.messages.length ? liveAtRead.messages : resumeRequestBaselineMessages
 
-        const page = authoritativeSnapshot
-          ? null
-          : await getLatestSessionMessages(storedSessionId, restScope, { verifyResolvedSession: true }).catch(() => null)
+        const hydration = authoritativeSnapshot
+          ? { kind: 'snapshot' } as const
+          : await readTranscript().then(
+              page => ({ kind: 'page', page } as const),
+              () => ({ kind: 'failed' } as const)
+            )
+
+        const page = hydration.kind === 'page' ? hydration.page : null
 
         const attachedStoredId = resumed.info?.stored_session_id || resumed.session_key || resumed.resumed || storedSessionId
 
         const tail = page?.messages.length
           ? await extendRefreshPageToOverlap(
-              toChatMessages(page.messages), baseline, olderPageReader(storedSessionId, restScope, page)
+              toChatMessages(page.messages), baseline, olderPageReader(storedSessionId, readOwner, page)
             )
           : []
 
@@ -586,6 +602,13 @@ export function useSessionTileDelegate({
         // publish the older response into the runtime the tile now owns.
         if (currentBinding && currentBinding !== existing && currentBinding !== runtimeId) {
           return currentBinding
+        }
+
+        if (
+          hydration.kind === 'failed' && !currentState?.messages.length &&
+          !resumeRequestBaselineMessages.length && !resumed.messages?.length
+        ) {
+          throw new Error('Could not load the session transcript')
         }
 
         const info = resumed?.info
